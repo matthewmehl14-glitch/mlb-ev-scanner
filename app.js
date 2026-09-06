@@ -134,62 +134,73 @@ function renderCards() {
         : globalPlays.filter(play => play.marketName === currentFilter);
         
     for (const play of playsToShow) {
-        appendResultCard(play.playerName, play.marketName, play.targetLine, play.evResult, play.bookOdds, play.fairProb, play.gameTime, play.matchupData);
+        appendResultCard(play.playerName, play.marketName, play.targetLine, play.evResult, play.bestRetailOdds, play.bestRetailBook, play.fairProb, play.gameTime, play.matchupData);
     }
 }
 
-function appendResultCard(player, market, line, evResult, bookOdds, fairProb, gameTime, matchupData) {
+function appendResultCard(player, market, line, evResult, bestRetailOdds, bestRetailBook, fairProb, gameTime, matchupData) {
     const grid = document.getElementById("results-grid");
     const edgePercent = (evResult.edge * 100).toFixed(2);
     const hitRatePercent = (evResult.hitRate * 100).toFixed(2);
     const fairOddsStr = getAmericanOdds(fairProb);
     
-    // 1/4 Kelly Calculation with Max Unit Cap
-    const b = bookOdds > 0 ? (bookOdds / 100) : (100 / Math.abs(bookOdds));
+    // Calculate retail probability to check if the book is better than Pinnacle (Top-Down EV)
+    const retailProb = bestRetailOdds > 0 ? 100 / (bestRetailOdds + 100) : Math.abs(bestRetailOdds) / (Math.abs(bestRetailOdds) + 100);
+    const isTopDownEV = retailProb < fairProb; 
+    const retailOddsStr = bestRetailOdds > 0 ? `+${bestRetailOdds}` : `${bestRetailOdds}`;
+    
+    // 1/4 Kelly Calculation using Best Retail Odds (Capped at 2 Units)
+    const b = bestRetailOdds > 0 ? (bestRetailOdds / 100) : (100 / Math.abs(bestRetailOdds));
     const p = evResult.hitRate;
     const q = 1 - p;
     const fullKelly = ((b * p) - q) / b;
     const quarterKellyPct = fullKelly > 0 ? (fullKelly * 0.25) : 0;
     
     let unitSize = quarterKellyPct * 100;
-    
-    // Strict Bankroll Management: Cap at 2.00 Units
-    if (unitSize > 2.00) {
-        unitSize = 2.00;
-    }
+    if (unitSize > 2.00) unitSize = 2.00;
     
     const kellyText = fullKelly > 0 ? `${unitSize.toFixed(2)}u` : "0.00u";
+
+    // Visual Badging for Sharp Top-Down Value
+    const topDownBadge = isTopDownEV 
+        ? `<span class="bg-green-900 text-green-400 text-[10px] px-2 py-1 rounded shadow border border-green-500 font-bold whitespace-nowrap ml-2">🔥 Sharp Value</span>` 
+        : ``;
+    const retailColor = isTopDownEV ? "text-green-400" : "text-red-400";
 
     const matchupHtml = matchupData 
         ? `<div class="text-xs text-purple-400 font-mono mb-2 mt-[-4px]">vs. ${matchupData.pitcherName} (Adj: x${matchupData.multiplier.toFixed(2)})</div>`
         : `<div class="mb-2"></div>`;
 
     const card = document.createElement("div");
-    card.className = "bg-gray-800 p-4 rounded-lg border-l-4 border-green-500 shadow-md transition hover:bg-gray-700";
+    card.className = "bg-gray-800 p-4 rounded-lg border-l-4 border-green-500 shadow-md transition hover:bg-gray-700 flex flex-col";
     card.innerHTML = `
         <div class="flex justify-between items-center mb-1">
             <div class="text-xs text-gray-400 uppercase">${market.replace(/_/g, ' ')}</div>
             <div class="text-xs font-bold text-cyan-400">${gameTime} CT</div>
         </div>
-        <div class="text-xl font-bold text-white">${player}</div>
+        <div class="text-xl font-bold text-white flex items-center flex-wrap">${player} ${topDownBadge}</div>
         ${matchupHtml}
         <div class="flex justify-between text-sm mb-1 mt-2">
             <span class="text-gray-300">Target Line:</span>
             <span class="font-bold text-white">Over ${line}</span>
         </div>
         <div class="flex justify-between text-sm mb-1">
-            <span class="text-gray-300">Fair Odds:</span>
+            <span class="text-gray-300">Pinnacle Fair Odds:</span>
             <span class="font-bold text-blue-400">${fairOddsStr}</span>
         </div>
-        <div class="flex justify-between text-sm mb-1">
-            <span class="text-gray-300">Adj. Hit Rate:</span>
+        <div class="flex justify-between text-sm mb-2 pb-2 border-b border-gray-700">
+            <span class="text-gray-300">Best Available (<span class="text-xs text-gray-400">${bestRetailBook}</span>):</span>
+            <span class="font-bold ${retailColor}">${retailOddsStr}</span>
+        </div>
+        <div class="flex justify-between text-sm mb-1 pt-1">
+            <span class="text-gray-300">Adj. Sim Hit Rate:</span>
             <span class="font-bold text-white">${hitRatePercent}%</span>
         </div>
-        <div class="mt-3 pt-3 border-t border-gray-700 flex justify-between items-center">
+        <div class="flex justify-between items-center mb-2">
             <span class="text-sm text-gray-400">Monte Carlo Edge:</span>
             <span class="font-bold text-green-400 bg-green-900/30 px-2 py-1 rounded text-lg">+${edgePercent}%</span>
         </div>
-        <div class="mt-2 flex justify-between items-center">
+        <div class="mt-1 flex justify-between items-center border-t border-gray-700 pt-3">
             <span class="text-sm text-gray-400">Unit Size Recommendation:</span>
             <span class="font-bold text-yellow-400">${kellyText}</span>
         </div>
@@ -226,6 +237,8 @@ async function scanSlate() {
         console.error("Warning: Could not fetch probable pitchers.", error);
     }
     
+    // Inject all of your specific retail sportsbooks along with Pinnacle
+    const targetBookmakers = "pinnacle,williamhill_us,draftkings,fanatics,fanduel,novig,espnbet,betmgm";
     const marketsToScan = "pitcher_strikeouts,pitcher_outs,batter_total_bases,batter_hits_runs_rbis";
     
     try {
@@ -238,27 +251,68 @@ async function scanSlate() {
             const gameDate = new Date(game.commence_time);
             const timeString = gameDate.toLocaleTimeString('en-US', { timeZone: 'America/Chicago', hour: 'numeric', minute: '2-digit', hour12: true });
             
-            // Added &oddsFormat=american parameter to ensure Kelly math works correctly
-            const oddsUrl = `https://api.the-odds-api.com/v4/sports/baseball_mlb/events/${game.id}/odds?apiKey=${apiKey}&regions=us,eu&markets=${marketsToScan}&bookmakers=pinnacle&oddsFormat=american`;
-            let oddsResponse = await fetch(oddsUrl);
-            let oddsData = await oddsResponse.json();
+            const oddsUrl = `https://api.the-odds-api.com/v4/sports/baseball_mlb/events/${game.id}/odds?apiKey=${apiKey}&markets=${marketsToScan}&bookmakers=${targetBookmakers}&oddsFormat=american`;
+            let oddsResponse;
+            try {
+                oddsResponse = await fetch(oddsUrl);
+            } catch(e) { continue; }
             
+            let oddsData = await oddsResponse.json();
             if (!oddsData.bookmakers || oddsData.bookmakers.length === 0) continue;
             
-            for (const market of oddsData.bookmakers[0].markets) {
-                const marketName = market.key;
+            // Group outcomes by market, then by player to compare books
+            const marketDict = {};
+            for (const bookmaker of oddsData.bookmakers) {
+                const bookName = bookmaker.title;
+                const isPinnacle = bookmaker.key === 'pinnacle';
                 
-                const players = {};
-                for (const outcome of market.outcomes) {
-                    if (!players[outcome.description]) players[outcome.description] = {};
-                    players[outcome.description][outcome.name] = outcome;
-                }
-                
-                for (const [playerName, lines] of Object.entries(players)) {
-                    if (!lines['Over'] || !lines['Under']) continue;
+                for (const market of bookmaker.markets) {
+                    const marketName = market.key;
+                    if (!marketDict[marketName]) marketDict[marketName] = {};
                     
-                    const targetLine = lines['Over'].point;
-                    const fairProb = getFairProbability(lines['Over'].price, lines['Under'].price);
+                    for (const outcome of market.outcomes) {
+                        const playerName = outcome.description;
+                        if (!playerName) continue;
+                        
+                        if (!marketDict[marketName][playerName]) {
+                            marketDict[marketName][playerName] = { pinnacle: {}, retail: {} };
+                        }
+                        
+                        if (isPinnacle) {
+                            marketDict[marketName][playerName].pinnacle[outcome.name] = outcome;
+                        } else {
+                            if (!marketDict[marketName][playerName].retail[bookName]) {
+                                marketDict[marketName][playerName].retail[bookName] = {};
+                            }
+                            marketDict[marketName][playerName].retail[bookName][outcome.name] = outcome;
+                        }
+                    }
+                }
+            }
+            
+            // Calculate Edges
+            for (const [marketName, players] of Object.entries(marketDict)) {
+                for (const [playerName, lines] of Object.entries(players)) {
+                    const pinny = lines.pinnacle;
+                    if (!pinny['Over'] || !pinny['Under']) continue;
+                    
+                    const targetLine = pinny['Over'].point;
+                    const fairProb = getFairProbability(pinny['Over'].price, pinny['Under'].price);
+                    
+                    // Hunt for the Best Available Retail Odds for the exact same target line
+                    let bestRetailOdds = -Infinity;
+                    let bestRetailBook = "";
+                    
+                    for (const [retailBookName, retailLines] of Object.entries(lines.retail)) {
+                        if (retailLines['Over'] && retailLines['Over'].point === targetLine) {
+                            if (retailLines['Over'].price > bestRetailOdds) {
+                                bestRetailOdds = retailLines['Over'].price;
+                                bestRetailBook = retailBookName;
+                            }
+                        }
+                    }
+                    
+                    if (bestRetailOdds === -Infinity) continue; 
                     
                     const playerId = await fetchMlbPlayerId(playerName);
                     if (!playerId) continue;
@@ -324,14 +378,18 @@ async function scanSlate() {
                     }
                     
                     if (expectedValue > 0) {
-                        const evResult = runSimulation(expectedValue, targetLine, fairProb);
+                        // RUN SIMULATION AGAINST THE BEST RETAIL ODDS
+                        const retailProb = bestRetailOdds > 0 ? 100 / (bestRetailOdds + 100) : Math.abs(bestRetailOdds) / (Math.abs(bestRetailOdds) + 100);
+                        const evResult = runSimulation(expectedValue, targetLine, retailProb);
+                        
                         if (evResult.isPositiveEV) {
                             globalPlays.push({
                                 playerName: playerName,
                                 marketName: marketName,
                                 targetLine: targetLine,
                                 evResult: evResult,
-                                bookOdds: lines['Over'].price,
+                                bestRetailOdds: bestRetailOdds,
+                                bestRetailBook: bestRetailBook,
                                 fairProb: fairProb,
                                 gameTime: timeString,
                                 matchupData: matchupData
