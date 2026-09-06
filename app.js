@@ -107,8 +107,8 @@ function updateStatus(message) {
     document.getElementById("status-text").innerText = message;
 }
 
-function filterResults(marketName) {
-    currentFilter = marketName;
+function filterResults(filterKey) {
+    currentFilter = filterKey;
     
     const buttons = document.querySelectorAll('#filters button');
     buttons.forEach(btn => {
@@ -116,7 +116,7 @@ function filterResults(marketName) {
         btn.classList.add('bg-gray-700', 'hover:bg-gray-600');
     });
     
-    const activeBtn = document.getElementById(`btn-${marketName}`);
+    const activeBtn = document.getElementById(`btn-${filterKey}`);
     if (activeBtn) {
         activeBtn.classList.remove('bg-gray-700', 'hover:bg-gray-600');
         activeBtn.classList.add('bg-cyan-600', 'hover:bg-cyan-500');
@@ -129,24 +129,25 @@ function renderCards() {
     const grid = document.getElementById("results-grid");
     grid.innerHTML = "";
     
-    const playsToShow = currentFilter === 'all' 
-        ? globalPlays 
-        : globalPlays.filter(play => play.marketName === currentFilter);
+    let playsToShow = [];
+    if (currentFilter === 'all') {
+        playsToShow = globalPlays;
+    } else if (currentFilter === 'sharp_value') {
+        playsToShow = globalPlays.filter(play => play.isTopDownEV);
+    } else {
+        playsToShow = globalPlays.filter(play => play.marketName === currentFilter);
+    }
         
     for (const play of playsToShow) {
-        appendResultCard(play.playerName, play.marketName, play.targetLine, play.evResult, play.bestRetailOdds, play.bestRetailBook, play.fairProb, play.gameTime, play.matchupData);
+        appendResultCard(play.playerName, play.marketName, play.targetLine, play.evResult, play.bestRetailOdds, play.bestRetailBook, play.fairProb, play.gameTime, play.matchupData, play.isTopDownEV);
     }
 }
 
-function appendResultCard(player, market, line, evResult, bestRetailOdds, bestRetailBook, fairProb, gameTime, matchupData) {
+function appendResultCard(player, market, line, evResult, bestRetailOdds, bestRetailBook, fairProb, gameTime, matchupData, isTopDownEV) {
     const grid = document.getElementById("results-grid");
     const edgePercent = (evResult.edge * 100).toFixed(2);
     const hitRatePercent = (evResult.hitRate * 100).toFixed(2);
     const fairOddsStr = getAmericanOdds(fairProb);
-    
-    // Calculate retail probability to check if the book is better than Pinnacle (Top-Down EV)
-    const retailProb = bestRetailOdds > 0 ? 100 / (bestRetailOdds + 100) : Math.abs(bestRetailOdds) / (Math.abs(bestRetailOdds) + 100);
-    const isTopDownEV = retailProb < fairProb; 
     const retailOddsStr = bestRetailOdds > 0 ? `+${bestRetailOdds}` : `${bestRetailOdds}`;
     
     // 1/4 Kelly Calculation using Best Retail Odds (Capped at 2 Units)
@@ -165,7 +166,7 @@ function appendResultCard(player, market, line, evResult, bestRetailOdds, bestRe
     const topDownBadge = isTopDownEV 
         ? `<span class="bg-green-900 text-green-400 text-[10px] px-2 py-1 rounded shadow border border-green-500 font-bold whitespace-nowrap ml-2">🔥 Sharp Value</span>` 
         : ``;
-    const retailColor = isTopDownEV ? "text-green-400" : "text-red-400";
+    const retailColor = isTopDownEV ? "text-green-400 font-bold" : "text-red-400";
 
     const matchupHtml = matchupData 
         ? `<div class="text-xs text-purple-400 font-mono mb-2 mt-[-4px]">vs. ${matchupData.pitcherName} (Adj: x${matchupData.multiplier.toFixed(2)})</div>`
@@ -190,7 +191,7 @@ function appendResultCard(player, market, line, evResult, bestRetailOdds, bestRe
         </div>
         <div class="flex justify-between text-sm mb-2 pb-2 border-b border-gray-700">
             <span class="text-gray-300">Best Available (<span class="text-xs text-gray-400">${bestRetailBook}</span>):</span>
-            <span class="font-bold ${retailColor}">${retailOddsStr}</span>
+            <span class="${retailColor}">${retailOddsStr}</span>
         </div>
         <div class="flex justify-between text-sm mb-1 pt-1">
             <span class="text-gray-300">Adj. Sim Hit Rate:</span>
@@ -237,7 +238,6 @@ async function scanSlate() {
         console.error("Warning: Could not fetch probable pitchers.", error);
     }
     
-    // Inject all of your specific retail sportsbooks along with Pinnacle
     const targetBookmakers = "pinnacle,williamhill_us,draftkings,fanatics,fanduel,novig,espnbet,betmgm";
     const marketsToScan = "pitcher_strikeouts,pitcher_outs,batter_total_bases,batter_hits_runs_rbis";
     
@@ -260,7 +260,6 @@ async function scanSlate() {
             let oddsData = await oddsResponse.json();
             if (!oddsData.bookmakers || oddsData.bookmakers.length === 0) continue;
             
-            // Group outcomes by market, then by player to compare books
             const marketDict = {};
             for (const bookmaker of oddsData.bookmakers) {
                 const bookName = bookmaker.title;
@@ -290,7 +289,6 @@ async function scanSlate() {
                 }
             }
             
-            // Calculate Edges
             for (const [marketName, players] of Object.entries(marketDict)) {
                 for (const [playerName, lines] of Object.entries(players)) {
                     const pinny = lines.pinnacle;
@@ -299,7 +297,6 @@ async function scanSlate() {
                     const targetLine = pinny['Over'].point;
                     const fairProb = getFairProbability(pinny['Over'].price, pinny['Under'].price);
                     
-                    // Hunt for the Best Available Retail Odds for the exact same target line
                     let bestRetailOdds = -Infinity;
                     let bestRetailBook = "";
                     
@@ -378,8 +375,8 @@ async function scanSlate() {
                     }
                     
                     if (expectedValue > 0) {
-                        // RUN SIMULATION AGAINST THE BEST RETAIL ODDS
                         const retailProb = bestRetailOdds > 0 ? 100 / (bestRetailOdds + 100) : Math.abs(bestRetailOdds) / (Math.abs(bestRetailOdds) + 100);
+                        const isTopDownEV = retailProb < fairProb;
                         const evResult = runSimulation(expectedValue, targetLine, retailProb);
                         
                         if (evResult.isPositiveEV) {
@@ -392,7 +389,8 @@ async function scanSlate() {
                                 bestRetailBook: bestRetailBook,
                                 fairProb: fairProb,
                                 gameTime: timeString,
-                                matchupData: matchupData
+                                matchupData: matchupData,
+                                isTopDownEV: isTopDownEV
                             });
                         }
                     }
