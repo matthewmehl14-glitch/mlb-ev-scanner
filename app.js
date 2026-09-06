@@ -68,7 +68,6 @@ async function fetchPlayerStats(playerId, isPitcher) {
         const data = await response.json();
         if (data.stats && data.stats[0] && data.stats[0].splits[0]) {
             const stats = data.stats[0].splits[0].stat;
-            // Attach team object to stats for matchup identification
             stats.team = data.stats[0].splits[0].team; 
             statsCache[cacheKey] = stats;
             return stats;
@@ -145,18 +144,22 @@ function appendResultCard(player, market, line, evResult, bookOdds, fairProb, ga
     const hitRatePercent = (evResult.hitRate * 100).toFixed(2);
     const fairOddsStr = getAmericanOdds(fairProb);
     
-    // Quarter Kelly Calculation ($1000 Bankroll)
+    // 1/4 Kelly Calculation with Max Unit Cap
     const b = bookOdds > 0 ? (bookOdds / 100) : (100 / Math.abs(bookOdds));
     const p = evResult.hitRate;
     const q = 1 - p;
     const fullKelly = ((b * p) - q) / b;
     const quarterKellyPct = fullKelly > 0 ? (fullKelly * 0.25) : 0;
     
-    const dollarAmount = 1000 * quarterKellyPct;
-    const unitSize = quarterKellyPct * 100;
-    const kellyText = fullKelly > 0 ? `$${dollarAmount.toFixed(2)} (${unitSize.toFixed(2)}u)` : "$0.00 (0.00u)";
+    let unitSize = quarterKellyPct * 100;
+    
+    // Strict Bankroll Management: Cap at 2.00 Units
+    if (unitSize > 2.00) {
+        unitSize = 2.00;
+    }
+    
+    const kellyText = fullKelly > 0 ? `${unitSize.toFixed(2)}u` : "0.00u";
 
-    // Inject Matchup display if it's a batter
     const matchupHtml = matchupData 
         ? `<div class="text-xs text-purple-400 font-mono mb-2 mt-[-4px]">vs. ${matchupData.pitcherName} (Adj: x${matchupData.multiplier.toFixed(2)})</div>`
         : `<div class="mb-2"></div>`;
@@ -187,7 +190,7 @@ function appendResultCard(player, market, line, evResult, bookOdds, fairProb, ga
             <span class="font-bold text-green-400 bg-green-900/30 px-2 py-1 rounded text-lg">+${edgePercent}%</span>
         </div>
         <div class="mt-2 flex justify-between items-center">
-            <span class="text-sm text-gray-400">Rec. Unit Size:</span>
+            <span class="text-sm text-gray-400">Unit Size Recommendation:</span>
             <span class="font-bold text-yellow-400">${kellyText}</span>
         </div>
     `;
@@ -202,7 +205,6 @@ async function scanSlate() {
     
     updateStatus("Fetching MLB Schedule & Probable Pitchers...");
     
-    // 1. Fetch Today's MLB Schedule to map starting pitchers
     const todayDate = new Date().toLocaleDateString('en-CA', { timeZone: 'America/Chicago' }); 
     const scheduleUrl = `https://statsapi.mlb.com/api/v1/schedule?sportId=1&date=${todayDate}&hydrate=probablePitcher,team`;
     let teamStarters = {};
@@ -236,7 +238,8 @@ async function scanSlate() {
             const gameDate = new Date(game.commence_time);
             const timeString = gameDate.toLocaleTimeString('en-US', { timeZone: 'America/Chicago', hour: 'numeric', minute: '2-digit', hour12: true });
             
-            const oddsUrl = `https://api.the-odds-api.com/v4/sports/baseball_mlb/events/${game.id}/odds?apiKey=${apiKey}&regions=us,eu&markets=${marketsToScan}&bookmakers=pinnacle`;
+            // Added &oddsFormat=american parameter to ensure Kelly math works correctly
+            const oddsUrl = `https://api.the-odds-api.com/v4/sports/baseball_mlb/events/${game.id}/odds?apiKey=${apiKey}&regions=us,eu&markets=${marketsToScan}&bookmakers=pinnacle&oddsFormat=american`;
             let oddsResponse = await fetch(oddsUrl);
             let oddsData = await oddsResponse.json();
             
@@ -276,7 +279,6 @@ async function scanSlate() {
                             expectedValue = totalOuts / stats.gamesStarted;
                         }
                     } else {
-                        // BATTER LOGIC: Opposing Pitcher Checks
                         let batterTeam = stats.team ? stats.team.name : "";
                         let opposingTeam = "";
                         
@@ -293,7 +295,6 @@ async function scanSlate() {
                             if (altMatch) opposingPitcher = teamStarters[altMatch];
                         }
                         
-                        // IF PITCHER IS UNASSIGNED, WE ABORT SIMULATION FOR THIS BATTER
                         if (!opposingPitcher) continue;
                         
                         const pitcherStats = await fetchPlayerStats(opposingPitcher.id, true);
@@ -309,7 +310,6 @@ async function scanSlate() {
                             }
                         }
                         
-                        // Clamp bounds to prevent math breakage from tiny pitcher sample sizes
                         multiplier = Math.max(0.70, Math.min(multiplier, 1.30));
                         
                         if (marketName === "batter_total_bases" && stats.gamesPlayed > 0) {
