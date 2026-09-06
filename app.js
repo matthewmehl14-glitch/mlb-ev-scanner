@@ -139,11 +139,15 @@ function renderCards() {
     }
         
     for (const play of playsToShow) {
-        appendResultCard(play.playerName, play.marketName, play.targetLine, play.evResult, play.bestRetailOdds, play.bestRetailBook, play.fairProb, play.gameTime, play.matchupData, play.isTopDownEV);
+        appendResultCard(
+            play.playerName, play.marketName, play.targetLine, play.evResult, 
+            play.bestRetailOdds, play.bestRetailBook, play.fairProb, 
+            play.gameTime, play.matchupData, play.isTopDownEV, play.benchmarkName
+        );
     }
 }
 
-function appendResultCard(player, market, line, evResult, bestRetailOdds, bestRetailBook, fairProb, gameTime, matchupData, isTopDownEV) {
+function appendResultCard(player, market, line, evResult, bestRetailOdds, bestRetailBook, fairProb, gameTime, matchupData, isTopDownEV, benchmarkName) {
     const grid = document.getElementById("results-grid");
     const edgePercent = (evResult.edge * 100).toFixed(2);
     const hitRatePercent = (evResult.hitRate * 100).toFixed(2);
@@ -186,7 +190,7 @@ function appendResultCard(player, market, line, evResult, bestRetailOdds, bestRe
             <span class="font-bold text-white">Over ${line}</span>
         </div>
         <div class="flex justify-between text-sm mb-1">
-            <span class="text-gray-300">Pinnacle Fair Odds:</span>
+            <span class="text-gray-300">${benchmarkName} Fair Odds:</span>
             <span class="font-bold text-blue-400">${fairOddsStr}</span>
         </div>
         <div class="flex justify-between text-sm mb-2 pb-2 border-b border-gray-700">
@@ -244,11 +248,13 @@ async function scanSlate() {
     try {
         const eventsResponse = await fetch(`https://api.the-odds-api.com/v4/sports/baseball_mlb/events?apiKey=${apiKey}`);
         const events = await eventsResponse.json();
+        const currentTime = new Date(); 
         
         for (const game of events) {
-            updateStatus(`Analyzing: ${game.away_team} @ ${game.home_team}...`);
-            
             const gameDate = new Date(game.commence_time);
+            if (gameDate < currentTime) continue; 
+            
+            updateStatus(`Analyzing: ${game.away_team} @ ${game.home_team}...`);
             const timeString = gameDate.toLocaleTimeString('en-US', { timeZone: 'America/Chicago', hour: 'numeric', minute: '2-digit', hour12: true });
             
             const oddsUrl = `https://api.the-odds-api.com/v4/sports/baseball_mlb/events/${game.id}/odds?apiKey=${apiKey}&markets=${marketsToScan}&bookmakers=${targetBookmakers}&oddsFormat=american`;
@@ -263,7 +269,6 @@ async function scanSlate() {
             const marketDict = {};
             for (const bookmaker of oddsData.bookmakers) {
                 const bookName = bookmaker.title;
-                const isPinnacle = bookmaker.key === 'pinnacle';
                 
                 for (const market of bookmaker.markets) {
                     const marketName = market.key;
@@ -274,28 +279,67 @@ async function scanSlate() {
                         if (!playerName) continue;
                         
                         if (!marketDict[marketName][playerName]) {
-                            marketDict[marketName][playerName] = { pinnacle: {}, retail: {} };
+                            marketDict[marketName][playerName] = { pinnacle: {}, fanduel: {}, retail: {} };
                         }
                         
-                        if (isPinnacle) {
+                        if (bookmaker.key === 'pinnacle') {
                             marketDict[marketName][playerName].pinnacle[outcome.name] = outcome;
-                        } else {
-                            if (!marketDict[marketName][playerName].retail[bookName]) {
-                                marketDict[marketName][playerName].retail[bookName] = {};
-                            }
-                            marketDict[marketName][playerName].retail[bookName][outcome.name] = outcome;
+                        } 
+                        if (bookmaker.key === 'fanduel') {
+                            marketDict[marketName][playerName].fanduel[outcome.name] = outcome;
                         }
+                        
+                        // Push all to retail (including FD/Pinny) so we can bet there if it's somehow the best price
+                        if (!marketDict[marketName][playerName].retail[bookName]) {
+                            marketDict[marketName][playerName].retail[bookName] = {};
+                        }
+                        marketDict[marketName][playerName].retail[bookName][outcome.name] = outcome;
                     }
                 }
             }
             
             for (const [marketName, players] of Object.entries(marketDict)) {
                 for (const [playerName, lines] of Object.entries(players)) {
-                    const pinny = lines.pinnacle;
-                    if (!pinny['Over'] || !pinny['Under']) continue;
                     
-                    const targetLine = pinny['Over'].point;
-                    const fairProb = getFairProbability(pinny['Over'].price, pinny['Under'].price);
+                    const fd = lines.fanduel;
+                    const pinny = lines.pinnacle;
+                    
+                    let targetLine = null;
+                    let fdFairProb = null;
+                    let pinnyFairProb = null;
+                    
+                    // Prioritize FanDuel's line as the target
+                    if (fd['Over'] && fd['Under']) {
+                        targetLine = fd['Over'].point;
+                        fdFairProb = getFairProbability(fd['Over'].price, fd['Under'].price);
+                    }
+                    
+                    // Pull Pinnacle if it matches the target line, or if FD doesn't have it
+                    if (pinny['Over'] && pinny['Under']) {
+                        if (targetLine === null) {
+                            targetLine = pinny['Over'].point;
+                            pinnyFairProb = getFairProbability(pinny['Over'].price, pinny['Under'].price);
+                        } else if (pinny['Over'].point === targetLine) {
+                            pinnyFairProb = getFairProbability(pinny['Over'].price, pinny['Under'].price);
+                        }
+                    }
+                    
+                    if (fdFairProb === null && pinnyFairProb === null) continue;
+                    
+                    // Calculate the Consensus Fair Probability
+                    let fairProb = 0;
+                    let benchmarkName = "";
+                    
+                    if (fdFairProb !== null && pinnyFairProb !== null) {
+                        fairProb = (fdFairProb + pinnyFairProb) / 2;
+                        benchmarkName = "Consensus (FD+Pinny)";
+                    } else if (fdFairProb !== null) {
+                        fairProb = fdFairProb;
+                        benchmarkName = "FanDuel";
+                    } else {
+                        fairProb = pinnyFairProb;
+                        benchmarkName = "Pinnacle";
+                    }
                     
                     let bestRetailOdds = -Infinity;
                     let bestRetailBook = "";
@@ -388,6 +432,7 @@ async function scanSlate() {
                                 bestRetailOdds: bestRetailOdds,
                                 bestRetailBook: bestRetailBook,
                                 fairProb: fairProb,
+                                benchmarkName: benchmarkName,
                                 gameTime: timeString,
                                 matchupData: matchupData,
                                 isTopDownEV: isTopDownEV
