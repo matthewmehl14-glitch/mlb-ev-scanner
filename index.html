@@ -1,0 +1,39 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>MLB +EV Scanner</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body class="bg-gray-900 text-white font-sans p-6">
+    <div class="max-w-5xl mx-auto">
+        <h1 class="text-3xl font-bold mb-6 text-cyan-400">MLB +EV Prop Scanner</h1>
+
+        <!-- API Setup Section -->
+        <div id="setup-panel" class="bg-gray-800 p-6 rounded-lg mb-6 border border-gray-700">
+            <h2 class="text-xl mb-4">API Setup</h2>
+            <input type="password" id="api-key-input" placeholder="Enter The Odds API Key" class="bg-gray-700 text-white px-4 py-2 rounded w-full md:w-1/2 focus:outline-none focus:ring-2 focus:ring-cyan-500">
+            <button onclick="saveApiKey()" class="bg-cyan-600 hover:bg-cyan-500 text-white px-4 py-2 rounded mt-4 md:mt-0 md:ml-2">Save Key & Start</button>
+            <p class="text-xs text-gray-400 mt-2">Your key is saved locally in your browser. It is never uploaded to GitHub.</p>
+        </div>
+
+        <!-- Dashboard Section -->
+        <div id="dashboard" class="hidden">
+            <div class="flex justify-between items-center mb-6">
+                <button onclick="scanSlate()" class="bg-green-600 hover:bg-green-500 text-white font-bold py-3 px-6 rounded shadow-lg transition-transform transform hover:scale-105">
+                    Scan Today's Slate
+                </button>
+                <div id="status-text" class="text-gray-400 font-mono text-sm animate-pulse">Waiting to scan...</div>
+            </div>
+
+            <!-- Results Grid -->
+            <div id="results-grid" class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                <!-- Cards will be injected here via JavaScript -->
+            </div>
+        </div>
+    </div>
+
+    <script src="app.js"></script>
+</body>
+</html>
