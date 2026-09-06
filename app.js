@@ -38,24 +38,42 @@ function getAmericanOdds(probability) {
     }
 }
 
-// --- API Functions ---
+// --- API Functions & Caching ---
+const idCache = {};
+const statsCache = {};
+
 async function fetchMlbPlayerId(playerName) {
+    if (idCache[playerName]) return idCache[playerName];
+    
     const encodedName = encodeURIComponent(playerName);
     const url = `https://statsapi.mlb.com/api/v1/people/search?names=${encodedName}`;
     try {
         const response = await fetch(url);
         const data = await response.json();
-        return data.people && data.people.length > 0 ? data.people[0].id : null;
+        const id = data.people && data.people.length > 0 ? data.people[0].id : null;
+        idCache[playerName] = id;
+        return id;
     } catch { return null; }
 }
 
 async function fetchPlayerStats(playerId, isPitcher) {
     const statGroup = isPitcher ? "pitching" : "hitting";
+    const cacheKey = `${playerId}_${statGroup}`;
+    
+    if (statsCache[cacheKey]) return statsCache[cacheKey];
+    
     const url = `https://statsapi.mlb.com/api/v1/people/${playerId}/stats?stats=season&group=${statGroup}`;
     try {
         const response = await fetch(url);
         const data = await response.json();
-        return data.stats && data.stats[0] && data.stats[0].splits[0] ? data.stats[0].splits[0].stat : null;
+        if (data.stats && data.stats[0] && data.stats[0].splits[0]) {
+            const stats = data.stats[0].splits[0].stat;
+            // Attach team object to stats for matchup identification
+            stats.team = data.stats[0].splits[0].team; 
+            statsCache[cacheKey] = stats;
+            return stats;
+        }
+        return null;
     } catch { return null; }
 }
 
@@ -93,7 +111,6 @@ function updateStatus(message) {
 function filterResults(marketName) {
     currentFilter = marketName;
     
-    // Update button styles to reflect active state
     const buttons = document.querySelectorAll('#filters button');
     buttons.forEach(btn => {
         btn.classList.remove('bg-cyan-600', 'hover:bg-cyan-500');
@@ -118,31 +135,31 @@ function renderCards() {
         : globalPlays.filter(play => play.marketName === currentFilter);
         
     for (const play of playsToShow) {
-        appendResultCard(play.playerName, play.marketName, play.targetLine, play.evResult, play.bookOdds, play.fairProb, play.gameTime);
+        appendResultCard(play.playerName, play.marketName, play.targetLine, play.evResult, play.bookOdds, play.fairProb, play.gameTime, play.matchupData);
     }
 }
 
-function appendResultCard(player, market, line, evResult, bookOdds, fairProb, gameTime) {
+function appendResultCard(player, market, line, evResult, bookOdds, fairProb, gameTime, matchupData) {
     const grid = document.getElementById("results-grid");
     const edgePercent = (evResult.edge * 100).toFixed(2);
     const hitRatePercent = (evResult.hitRate * 100).toFixed(2);
-    
-    // 1. Calculate Fair Odds
     const fairOddsStr = getAmericanOdds(fairProb);
     
-    // 2. 1/4 Kelly Calculation for $1000 Bankroll
+    // Quarter Kelly Calculation ($1000 Bankroll)
     const b = bookOdds > 0 ? (bookOdds / 100) : (100 / Math.abs(bookOdds));
     const p = evResult.hitRate;
     const q = 1 - p;
     const fullKelly = ((b * p) - q) / b;
-    
     const quarterKellyPct = fullKelly > 0 ? (fullKelly * 0.25) : 0;
-    const bankroll = 1000;
     
-    // Format the display to output exact dollars and units
-    const dollarAmount = bankroll * quarterKellyPct;
+    const dollarAmount = 1000 * quarterKellyPct;
     const unitSize = quarterKellyPct * 100;
     const kellyText = fullKelly > 0 ? `$${dollarAmount.toFixed(2)} (${unitSize.toFixed(2)}u)` : "$0.00 (0.00u)";
+
+    // Inject Matchup display if it's a batter
+    const matchupHtml = matchupData 
+        ? `<div class="text-xs text-purple-400 font-mono mb-2 mt-[-4px]">vs. ${matchupData.pitcherName} (Adj: x${matchupData.multiplier.toFixed(2)})</div>`
+        : `<div class="mb-2"></div>`;
 
     const card = document.createElement("div");
     card.className = "bg-gray-800 p-4 rounded-lg border-l-4 border-green-500 shadow-md transition hover:bg-gray-700";
@@ -151,8 +168,9 @@ function appendResultCard(player, market, line, evResult, bookOdds, fairProb, ga
             <div class="text-xs text-gray-400 uppercase">${market.replace(/_/g, ' ')}</div>
             <div class="text-xs font-bold text-cyan-400">${gameTime} CT</div>
         </div>
-        <div class="text-xl font-bold text-white mb-2">${player}</div>
-        <div class="flex justify-between text-sm mb-1">
+        <div class="text-xl font-bold text-white">${player}</div>
+        ${matchupHtml}
+        <div class="flex justify-between text-sm mb-1 mt-2">
             <span class="text-gray-300">Target Line:</span>
             <span class="font-bold text-white">Over ${line}</span>
         </div>
@@ -161,7 +179,7 @@ function appendResultCard(player, market, line, evResult, bookOdds, fairProb, ga
             <span class="font-bold text-blue-400">${fairOddsStr}</span>
         </div>
         <div class="flex justify-between text-sm mb-1">
-            <span class="text-gray-300">Sim Hit Rate:</span>
+            <span class="text-gray-300">Adj. Hit Rate:</span>
             <span class="font-bold text-white">${hitRatePercent}%</span>
         </div>
         <div class="mt-3 pt-3 border-t border-gray-700 flex justify-between items-center">
@@ -169,7 +187,7 @@ function appendResultCard(player, market, line, evResult, bookOdds, fairProb, ga
             <span class="font-bold text-green-400 bg-green-900/30 px-2 py-1 rounded text-lg">+${edgePercent}%</span>
         </div>
         <div class="mt-2 flex justify-between items-center">
-            <span class="text-sm text-gray-400">Unit Size Recommendation:</span>
+            <span class="text-sm text-gray-400">Rec. Unit Size:</span>
             <span class="font-bold text-yellow-400">${kellyText}</span>
         </div>
     `;
@@ -179,10 +197,33 @@ function appendResultCard(player, market, line, evResult, bookOdds, fairProb, ga
 // --- Main Orchestrator ---
 async function scanSlate() {
     const apiKey = localStorage.getItem("OddsApiKey");
-    document.getElementById("results-grid").innerHTML = ""; // Clear visual grid
-    globalPlays = []; // Clear array for new scan
+    document.getElementById("results-grid").innerHTML = ""; 
+    globalPlays = []; 
     
-    updateStatus("Fetching MLB events...");
+    updateStatus("Fetching MLB Schedule & Probable Pitchers...");
+    
+    // 1. Fetch Today's MLB Schedule to map starting pitchers
+    const todayDate = new Date().toLocaleDateString('en-CA', { timeZone: 'America/Chicago' }); 
+    const scheduleUrl = `https://statsapi.mlb.com/api/v1/schedule?sportId=1&date=${todayDate}&hydrate=probablePitcher,team`;
+    let teamStarters = {};
+    
+    try {
+        const schedRes = await fetch(scheduleUrl);
+        const scheduleData = await schedRes.json();
+        if (scheduleData.dates && scheduleData.dates.length > 0) {
+            for (let g of scheduleData.dates[0].games) {
+                if (g.teams.home.probablePitcher) {
+                    teamStarters[g.teams.home.team.name] = { id: g.teams.home.probablePitcher.id, name: g.teams.home.probablePitcher.fullName };
+                }
+                if (g.teams.away.probablePitcher) {
+                    teamStarters[g.teams.away.team.name] = { id: g.teams.away.probablePitcher.id, name: g.teams.away.probablePitcher.fullName };
+                }
+            }
+        }
+    } catch (error) {
+        console.error("Warning: Could not fetch probable pitchers.", error);
+    }
+    
     const marketsToScan = "pitcher_strikeouts,pitcher_outs,batter_total_bases,batter_hits_runs_rbis";
     
     try {
@@ -192,14 +233,8 @@ async function scanSlate() {
         for (const game of events) {
             updateStatus(`Analyzing: ${game.away_team} @ ${game.home_team}...`);
             
-            // Format time string to Central Time
             const gameDate = new Date(game.commence_time);
-            const timeString = gameDate.toLocaleTimeString('en-US', {
-                timeZone: 'America/Chicago',
-                hour: 'numeric',
-                minute: '2-digit',
-                hour12: true
-            });
+            const timeString = gameDate.toLocaleTimeString('en-US', { timeZone: 'America/Chicago', hour: 'numeric', minute: '2-digit', hour12: true });
             
             const oddsUrl = `https://api.the-odds-api.com/v4/sports/baseball_mlb/events/${game.id}/odds?apiKey=${apiKey}&regions=us,eu&markets=${marketsToScan}&bookmakers=pinnacle`;
             let oddsResponse = await fetch(oddsUrl);
@@ -210,7 +245,6 @@ async function scanSlate() {
             for (const market of oddsData.bookmakers[0].markets) {
                 const marketName = market.key;
                 
-                // Group lines by player
                 const players = {};
                 for (const outcome of market.outcomes) {
                     if (!players[outcome.description]) players[outcome.description] = {};
@@ -231,22 +265,67 @@ async function scanSlate() {
                     if (!stats) continue;
                     
                     let expectedValue = 0;
-                    if (marketName === "pitcher_strikeouts" && stats.gamesStarted > 0) {
-                        expectedValue = stats.strikeouts / stats.gamesStarted;
-                    } else if (marketName === "pitcher_outs" && stats.gamesStarted > 0) {
-                        let ipParts = stats.inningsPitched.split('.');
-                        let totalOuts = (parseInt(ipParts[0]) * 3) + (ipParts.length > 1 ? parseInt(ipParts[1]) : 0);
-                        expectedValue = totalOuts / stats.gamesStarted;
-                    } else if (marketName === "batter_total_bases" && stats.gamesPlayed > 0) {
-                        expectedValue = stats.totalBases / stats.gamesPlayed;
-                    } else if (marketName === "batter_hits_runs_rbis" && stats.gamesPlayed > 0) {
-                        expectedValue = (stats.hits + stats.runs + stats.rbi) / stats.gamesPlayed;
+                    let matchupData = null;
+                    
+                    if (isPitcher) {
+                        if (marketName === "pitcher_strikeouts" && stats.gamesStarted > 0) {
+                            expectedValue = stats.strikeouts / stats.gamesStarted;
+                        } else if (marketName === "pitcher_outs" && stats.gamesStarted > 0) {
+                            let ipParts = stats.inningsPitched.split('.');
+                            let totalOuts = (parseInt(ipParts[0]) * 3) + (ipParts.length > 1 ? parseInt(ipParts[1]) : 0);
+                            expectedValue = totalOuts / stats.gamesStarted;
+                        }
+                    } else {
+                        // BATTER LOGIC: Opposing Pitcher Checks
+                        let batterTeam = stats.team ? stats.team.name : "";
+                        let opposingTeam = "";
+                        
+                        if (batterTeam === game.home_team) opposingTeam = game.away_team;
+                        else if (batterTeam === game.away_team) opposingTeam = game.home_team;
+                        else {
+                            if (game.home_team.includes(batterTeam) || batterTeam.includes(game.home_team)) opposingTeam = game.away_team;
+                            else if (game.away_team.includes(batterTeam) || batterTeam.includes(game.away_team)) opposingTeam = game.home_team;
+                        }
+                        
+                        let opposingPitcher = teamStarters[opposingTeam];
+                        if (!opposingPitcher) {
+                            let altMatch = Object.keys(teamStarters).find(t => t.includes(opposingTeam) || opposingTeam.includes(t));
+                            if (altMatch) opposingPitcher = teamStarters[altMatch];
+                        }
+                        
+                        // IF PITCHER IS UNASSIGNED, WE ABORT SIMULATION FOR THIS BATTER
+                        if (!opposingPitcher) continue;
+                        
+                        const pitcherStats = await fetchPlayerStats(opposingPitcher.id, true);
+                        let multiplier = 1.0;
+                        
+                        if (pitcherStats) {
+                            if (marketName === 'batter_total_bases') {
+                                const pitcherSlg = parseFloat(pitcherStats.slg) || 0.400;
+                                multiplier = pitcherSlg / 0.400;
+                            } else if (marketName === 'batter_hits_runs_rbis') {
+                                const pitcherWhip = parseFloat(pitcherStats.whip) || 1.25;
+                                multiplier = pitcherWhip / 1.25;
+                            }
+                        }
+                        
+                        // Clamp bounds to prevent math breakage from tiny pitcher sample sizes
+                        multiplier = Math.max(0.70, Math.min(multiplier, 1.30));
+                        
+                        if (marketName === "batter_total_bases" && stats.gamesPlayed > 0) {
+                            expectedValue = (stats.totalBases / stats.gamesPlayed) * multiplier;
+                        } else if (marketName === "batter_hits_runs_rbis" && stats.gamesPlayed > 0) {
+                            expectedValue = ((stats.hits + stats.runs + stats.rbi) / stats.gamesPlayed) * multiplier;
+                        }
+                        
+                        if (expectedValue > 0) {
+                            matchupData = { pitcherName: opposingPitcher.name, multiplier: multiplier };
+                        }
                     }
                     
                     if (expectedValue > 0) {
                         const evResult = runSimulation(expectedValue, targetLine, fairProb);
                         if (evResult.isPositiveEV) {
-                            // Save to global array for sorting and filtering
                             globalPlays.push({
                                 playerName: playerName,
                                 marketName: marketName,
@@ -254,7 +333,8 @@ async function scanSlate() {
                                 evResult: evResult,
                                 bookOdds: lines['Over'].price,
                                 fairProb: fairProb,
-                                gameTime: timeString
+                                gameTime: timeString,
+                                matchupData: matchupData
                             });
                         }
                     }
@@ -262,12 +342,8 @@ async function scanSlate() {
             }
         }
 
-        // Sort the master list by edge
         globalPlays.sort((a, b) => b.evResult.edge - a.evResult.edge);
-        
-        // Draw the cards based on current filter state
         renderCards();
-        
         updateStatus(`Scan complete. Displaying ${globalPlays.length} +EV plays.`);
     } catch (error) {
         updateStatus("Error fetching API data. Check console.");
@@ -275,5 +351,4 @@ async function scanSlate() {
     }
 }
 
-// Initialize on page load
 initDashboard();
