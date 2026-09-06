@@ -107,6 +107,9 @@ async function scanSlate() {
     updateStatus("Fetching MLB events...");
     const marketsToScan = "pitcher_strikeouts,pitcher_outs,batter_total_bases,batter_hits_runs_rbis";
     
+    // Create an empty array to hold our +EV plays before we show them
+    let allPlays = []; 
+
     try {
         const eventsResponse = await fetch(`https://api.the-odds-api.com/v4/sports/baseball_mlb/events?apiKey=${apiKey}`);
         const events = await eventsResponse.json();
@@ -158,12 +161,30 @@ async function scanSlate() {
                     
                     if (expectedValue > 0) {
                         const evResult = runSimulation(expectedValue, targetLine, fairProb);
-                        appendResultCard(playerName, marketName, targetLine, evResult);
+                        if (evResult.isPositiveEV) {
+                            // Instead of drawing the card immediately, save it to our array
+                            allPlays.push({
+                                playerName: playerName,
+                                marketName: marketName,
+                                targetLine: targetLine,
+                                evResult: evResult
+                            });
+                        }
                     }
                 }
             }
         }
-        updateStatus("Scan complete. Displaying +EV plays.");
+
+        // --- THE NEW SORTING LOGIC ---
+        // Sort the array from highest edge (b) to lowest edge (a)
+        allPlays.sort((a, b) => b.evResult.edge - a.evResult.edge);
+
+        // Loop through the sorted list and draw the cards on the screen
+        for (const play of allPlays) {
+            appendResultCard(play.playerName, play.marketName, play.targetLine, play.evResult);
+        }
+
+        updateStatus(`Scan complete. Displaying ${allPlays.length} +EV plays.`);
     } catch (error) {
         updateStatus("Error fetching API data. Check console.");
         console.error(error);
