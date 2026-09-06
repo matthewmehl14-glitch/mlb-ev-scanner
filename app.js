@@ -154,7 +154,7 @@ function appendResultCard(player, market, line, evResult, bestRetailOdds, bestRe
     const fairOddsStr = getAmericanOdds(fairProb);
     const retailOddsStr = bestRetailOdds > 0 ? `+${bestRetailOdds}` : `${bestRetailOdds}`;
     
-    // 1/4 Kelly Calculation using Best Retail Odds (Capped at 2 Units)
+    // 1/4 Kelly Calculation using Best Retail Odds (Capped at 2.00 Units)
     const b = bestRetailOdds > 0 ? (bestRetailOdds / 100) : (100 / Math.abs(bestRetailOdds));
     const p = evResult.hitRate;
     const q = 1 - p;
@@ -243,7 +243,7 @@ async function scanSlate() {
     }
     
     const targetBookmakers = "pinnacle,williamhill_us,draftkings,fanatics,fanduel,novig,espnbet,betmgm";
-    const marketsToScan = "pitcher_strikeouts,pitcher_outs,batter_total_bases,batter_hits_runs_rbis";
+    const marketsToScan = "pitcher_strikeouts,pitcher_outs,batter_total_bases,batter_home_runs";
     
     try {
         const eventsResponse = await fetch(`https://api.the-odds-api.com/v4/sports/baseball_mlb/events?apiKey=${apiKey}`);
@@ -252,7 +252,7 @@ async function scanSlate() {
         
         for (const game of events) {
             const gameDate = new Date(game.commence_time);
-            if (gameDate < currentTime) continue; 
+            if (gameDate < currentTime) continue; // Skip games already in progress
             
             updateStatus(`Analyzing: ${game.away_team} @ ${game.home_team}...`);
             const timeString = gameDate.toLocaleTimeString('en-US', { timeZone: 'America/Chicago', hour: 'numeric', minute: '2-digit', hour12: true });
@@ -289,7 +289,6 @@ async function scanSlate() {
                             marketDict[marketName][playerName].fanduel[outcome.name] = outcome;
                         }
                         
-                        // Push all to retail (including FD/Pinny) so we can bet there if it's somehow the best price
                         if (!marketDict[marketName][playerName].retail[bookName]) {
                             marketDict[marketName][playerName].retail[bookName] = {};
                         }
@@ -305,42 +304,26 @@ async function scanSlate() {
                     const pinny = lines.pinnacle;
                     
                     let targetLine = null;
-                    let fdFairProb = null;
-                    let pinnyFairProb = null;
-                    
-                    // Prioritize FanDuel's line as the target
-                    if (fd['Over'] && fd['Under']) {
-                        targetLine = fd['Over'].point;
-                        fdFairProb = getFairProbability(fd['Over'].price, fd['Under'].price);
-                    }
-                    
-                    // Pull Pinnacle if it matches the target line, or if FD doesn't have it
-                    if (pinny['Over'] && pinny['Under']) {
-                        if (targetLine === null) {
-                            targetLine = pinny['Over'].point;
-                            pinnyFairProb = getFairProbability(pinny['Over'].price, pinny['Under'].price);
-                        } else if (pinny['Over'].point === targetLine) {
-                            pinnyFairProb = getFairProbability(pinny['Over'].price, pinny['Under'].price);
-                        }
-                    }
-                    
-                    if (fdFairProb === null && pinnyFairProb === null) continue;
-                    
-                    // Calculate the Consensus Fair Probability
-                    let fairProb = 0;
+                    let fairProb = null;
                     let benchmarkName = "";
                     
-                    if (fdFairProb !== null && pinnyFairProb !== null) {
-                        fairProb = (fdFairProb + pinnyFairProb) / 2;
-                        benchmarkName = "Consensus (FD+Pinny)";
-                    } else if (fdFairProb !== null) {
-                        fairProb = fdFairProb;
+                    // --- PRIMARY: Check FanDuel First ---
+                    if (fd && fd['Over'] && fd['Under']) {
+                        targetLine = fd['Over'].point;
+                        fairProb = getFairProbability(fd['Over'].price, fd['Under'].price);
                         benchmarkName = "FanDuel";
-                    } else {
-                        fairProb = pinnyFairProb;
+                    } 
+                    // --- FALLBACK: IF and ONLY IF FanDuel is unavailable, use Pinnacle ---
+                    else if (pinny && pinny['Over'] && pinny['Under']) {
+                        targetLine = pinny['Over'].point;
+                        fairProb = getFairProbability(pinny['Over'].price, pinny['Under'].price);
                         benchmarkName = "Pinnacle";
                     }
                     
+                    // If neither bookmaker has a complete two-way market, skip this play
+                    if (fairProb === null || targetLine === null) continue;
+                    
+                    // Find the best available retail odds for that exact target line
                     let bestRetailOdds = -Infinity;
                     let bestRetailBook = "";
                     
@@ -390,6 +373,7 @@ async function scanSlate() {
                             if (altMatch) opposingPitcher = teamStarters[altMatch];
                         }
                         
+                        // Strict filter: skip batter if starting pitcher is unannounced
                         if (!opposingPitcher) continue;
                         
                         const pitcherStats = await fetchPlayerStats(opposingPitcher.id, true);
@@ -399,18 +383,21 @@ async function scanSlate() {
                             if (marketName === 'batter_total_bases') {
                                 const pitcherSlg = parseFloat(pitcherStats.slg) || 0.400;
                                 multiplier = pitcherSlg / 0.400;
-                            } else if (marketName === 'batter_hits_runs_rbis') {
-                                const pitcherWhip = parseFloat(pitcherStats.whip) || 1.25;
-                                multiplier = pitcherWhip / 1.25;
+                            } else if (marketName === 'batter_home_runs') {
+                                let ipParts = pitcherStats.inningsPitched ? pitcherStats.inningsPitched.split('.') : ['0'];
+                                let totalOuts = (parseInt(ipParts[0]) * 3) + (ipParts.length > 1 ? parseInt(ipParts[1]) : 0);
+                                let hrPer9 = totalOuts > 0 ? (pitcherStats.homeRuns / (totalOuts / 3)) * 9 : 1.15;
+                                multiplier = hrPer9 / 1.15;
                             }
                         }
                         
-                        multiplier = Math.max(0.70, Math.min(multiplier, 1.30));
+                        multiplier = Math.max(0.60, Math.min(multiplier, 1.40));
                         
                         if (marketName === "batter_total_bases" && stats.gamesPlayed > 0) {
                             expectedValue = (stats.totalBases / stats.gamesPlayed) * multiplier;
-                        } else if (marketName === "batter_hits_runs_rbis" && stats.gamesPlayed > 0) {
-                            expectedValue = ((stats.hits + stats.runs + stats.rbi) / stats.gamesPlayed) * multiplier;
+                        } else if (marketName === "batter_home_runs" && stats.gamesPlayed > 0) {
+                            const hrCount = stats.homeRuns || 0;
+                            expectedValue = (hrCount / stats.gamesPlayed) * multiplier;
                         }
                         
                         if (expectedValue > 0) {
