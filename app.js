@@ -307,18 +307,13 @@ async function scanSlate() {
     }
     
     const targetBookmakers = "pinnacle,williamhill_us,draftkings,fanatics,fanduel,novig,espnbet,betmgm";
-    // REMOVED pitcher_strikeouts to save credits
+    // Strikeouts removed to save credits
     const marketsToScan = "pitcher_outs,batter_total_bases,batter_home_runs";
     
     try {
-        updateStatus("Fetching Odds from API...");
+        const eventsResponse = await fetch(`https://api.the-odds-api.com/v4/sports/baseball_mlb/events?apiKey=${apiKey}`);
+        const events = await eventsResponse.json();
         const currentTime = new Date(); 
-        
-        // MASSIVE OPTIMIZATION: Fetch all games in ONE request instead of querying by game.id
-        const oddsUrl = `https://api.the-odds-api.com/v4/sports/baseball_mlb/odds?apiKey=${apiKey}&markets=${marketsToScan}&bookmakers=${targetBookmakers}&oddsFormat=american`;
-        
-        let oddsResponse = await fetch(oddsUrl);
-        let events = await oddsResponse.json();
         
         for (const game of events) {
             const gameDate = new Date(game.commence_time);
@@ -328,11 +323,18 @@ async function scanSlate() {
             const timeString = gameDate.toLocaleTimeString('en-US', { timeZone: 'America/Chicago', hour: 'numeric', minute: '2-digit', hour12: true });
             const currentParkFactor = getParkFactor(game.home_team);
             
-            // Skip the game if there are no bookmakers available yet
-            if (!game.bookmakers || game.bookmakers.length === 0) continue;
+            // Reverted back to the event-specific endpoint required for Player Props
+            const oddsUrl = `https://api.the-odds-api.com/v4/sports/baseball_mlb/events/${game.id}/odds?apiKey=${apiKey}&markets=${marketsToScan}&bookmakers=${targetBookmakers}&oddsFormat=american`;
+            let oddsResponse;
+            try {
+                oddsResponse = await fetch(oddsUrl);
+            } catch(e) { continue; }
+            
+            let oddsData = await oddsResponse.json();
+            if (!oddsData.bookmakers || oddsData.bookmakers.length === 0) continue;
             
             const marketDict = {};
-            for (const bookmaker of game.bookmakers) {
+            for (const bookmaker of oddsData.bookmakers) {
                 const bookName = bookmaker.title;
                 
                 for (const market of bookmaker.markets) {
