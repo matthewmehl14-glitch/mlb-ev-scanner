@@ -1,19 +1,57 @@
-// --- Core Math Engine ---
-function getPoissonRandom(expectedValue) {
-    let L = Math.exp(-expectedValue);
-    let k = 0;
-    let p = 1;
-    do {
-        k++;
-        p *= Math.random();
-    } while (p > L);
-    return k - 1;
+// --- Global Configurations ---
+const MIN_EDGE = 0.03; // 3.00% Minimum Edge Filter
+
+const PARK_FACTORS = {
+    "Colorado Rockies": 1.12,
+    "Cincinnati Reds": 1.09,
+    "Boston Red Sox": 1.07,
+    "Atlanta Braves": 1.05,
+    "Arizona Diamondbacks": 1.02,
+    "Baltimore Orioles": 0.96,
+    "San Diego Padres": 0.95,
+    "Seattle Mariners": 0.93
+    // All other stadiums default to 1.00
+};
+
+function getParkFactor(homeTeamName) {
+    return PARK_FACTORS[homeTeamName] || 1.00;
 }
 
-function runSimulation(expectedValue, targetLine, fairProb, sims = 10000) {
+// --- Core Math Engine (Upgraded to Negative Binomial) ---
+function getNegativeBinomialRandom(mean, varianceMultiplier) {
+    // If variance is essentially equal to mean, use standard Poisson (e.g., Pitcher Ks)
+    if (varianceMultiplier <= 1.001) {
+        let L = Math.exp(-mean);
+        let k = 0; let p = 1;
+        do { k++; p *= Math.random(); } while (p > L);
+        return k - 1;
+    }
+    
+    // Negative Binomial logic for overdispersed baseball stats (e.g., Total Bases)
+    const p = 1 / varianceMultiplier;
+    const r = (mean * p) / (1 - p);
+    
+    let u = Math.random();
+    let cumProb = 0;
+    let k = 0;
+    let prob = Math.pow(p, r); 
+    
+    while (true) {
+        cumProb += prob;
+        if (u < cumProb || k > 50) return k; // Cap at 50 to prevent infinite loops on wild data
+        k++;
+        // PMF recursive formula
+        prob = prob * (k + r - 1) / k * (1 - p);
+    }
+}
+
+function runSimulation(expectedValue, targetLine, fairProb, isBatter, sims = 10000) {
     let hits = 0;
+    // Apply 1.5x variance dispersion to batters, 1.0x (Poisson) to pitchers
+    const varianceMultiplier = isBatter ? 1.5 : 1.0; 
+    
     for (let i = 0; i < sims; i++) {
-        if (getPoissonRandom(expectedValue) > targetLine) {
+        if (getNegativeBinomialRandom(expectedValue, varianceMultiplier) > targetLine) {
             hits++;
         }
     }
@@ -58,7 +96,7 @@ async function fetchMlbPlayerId(playerName) {
 
 async function fetchPlayerStats(playerId, isPitcher) {
     const statGroup = isPitcher ? "pitching" : "hitting";
-    const cacheKey = `${playerId}_${statGroup}`;
+    const cacheKey = `${playerId}_overall_${statGroup}`;
     
     if (statsCache[cacheKey]) return statsCache[cacheKey];
     
@@ -74,6 +112,36 @@ async function fetchPlayerStats(playerId, isPitcher) {
         }
         return null;
     } catch { return null; }
+}
+
+async function fetchBatterSplits(playerId, sitCode) {
+    const cacheKey = `${playerId}_split_${sitCode}`;
+    if (statsCache[cacheKey]) return statsCache[cacheKey];
+    
+    const url = `https://statsapi.mlb.com/api/v1/people/${playerId}/stats?stats=statSplits&group=hitting&sitCodes=${sitCode}`;
+    try {
+        const response = await fetch(url);
+        const data = await response.json();
+        if (data.stats && data.stats[0] && data.stats[0].splits[0]) {
+            const stats = data.stats[0].splits[0].stat;
+            statsCache[cacheKey] = stats;
+            return stats;
+        }
+        return null;
+    } catch { return null; }
+}
+
+async function getPitcherHand(pitcherId) {
+    const cacheKey = `hand_${pitcherId}`;
+    if (statsCache[cacheKey]) return statsCache[cacheKey];
+    
+    try {
+        const response = await fetch(`https://statsapi.mlb.com/api/v1/people/${pitcherId}`);
+        const data = await response.json();
+        const hand = data.people[0].pitchHand.code; // 'L' or 'R'
+        statsCache[cacheKey] = hand;
+        return hand;
+    } catch { return 'R'; } // Default to Righty if API fails
 }
 
 // --- UI Controls & Filters ---
@@ -166,14 +234,13 @@ function appendResultCard(player, market, line, evResult, bestRetailOdds, bestRe
     
     const kellyText = fullKelly > 0 ? `${unitSize.toFixed(2)}u` : "0.00u";
 
-    // Visual Badging for Sharp Top-Down Value
     const topDownBadge = isTopDownEV 
         ? `<span class="bg-green-900 text-green-400 text-[10px] px-2 py-1 rounded shadow border border-green-500 font-bold whitespace-nowrap ml-2">🔥 Sharp Value</span>` 
         : ``;
     const retailColor = isTopDownEV ? "text-green-400 font-bold" : "text-red-400";
 
     const matchupHtml = matchupData 
-        ? `<div class="text-xs text-purple-400 font-mono mb-2 mt-[-4px]">vs. ${matchupData.pitcherName} (Adj: x${matchupData.multiplier.toFixed(2)})</div>`
+        ? `<div class="text-xs text-purple-400 font-mono mb-2 mt-[-4px]">vs. ${matchupData.pitcherName} (${matchupData.pitcherHand}) | PF: x${matchupData.parkFactor.toFixed(2)}</div>`
         : `<div class="mb-2"></div>`;
 
     const card = document.createElement("div");
@@ -231,10 +298,12 @@ async function scanSlate() {
         if (scheduleData.dates && scheduleData.dates.length > 0) {
             for (let g of scheduleData.dates[0].games) {
                 if (g.teams.home.probablePitcher) {
-                    teamStarters[g.teams.home.team.name] = { id: g.teams.home.probablePitcher.id, name: g.teams.home.probablePitcher.fullName };
+                    const id = g.teams.home.probablePitcher.id;
+                    teamStarters[g.teams.home.team.name] = { id: id, name: g.teams.home.probablePitcher.fullName, hand: await getPitcherHand(id) };
                 }
                 if (g.teams.away.probablePitcher) {
-                    teamStarters[g.teams.away.team.name] = { id: g.teams.away.probablePitcher.id, name: g.teams.away.probablePitcher.fullName };
+                    const id = g.teams.away.probablePitcher.id;
+                    teamStarters[g.teams.away.team.name] = { id: id, name: g.teams.away.probablePitcher.fullName, hand: await getPitcherHand(id) };
                 }
             }
         }
@@ -252,10 +321,11 @@ async function scanSlate() {
         
         for (const game of events) {
             const gameDate = new Date(game.commence_time);
-            if (gameDate < currentTime) continue; // Skip games already in progress
+            if (gameDate < currentTime) continue; 
             
             updateStatus(`Analyzing: ${game.away_team} @ ${game.home_team}...`);
             const timeString = gameDate.toLocaleTimeString('en-US', { timeZone: 'America/Chicago', hour: 'numeric', minute: '2-digit', hour12: true });
+            const currentParkFactor = getParkFactor(game.home_team);
             
             const oddsUrl = `https://api.the-odds-api.com/v4/sports/baseball_mlb/events/${game.id}/odds?apiKey=${apiKey}&markets=${marketsToScan}&bookmakers=${targetBookmakers}&oddsFormat=american`;
             let oddsResponse;
@@ -307,23 +377,19 @@ async function scanSlate() {
                     let fairProb = null;
                     let benchmarkName = "";
                     
-                    // --- PRIMARY: Check FanDuel First ---
                     if (fd && fd['Over'] && fd['Under']) {
                         targetLine = fd['Over'].point;
                         fairProb = getFairProbability(fd['Over'].price, fd['Under'].price);
                         benchmarkName = "FanDuel";
                     } 
-                    // --- FALLBACK: IF and ONLY IF FanDuel is unavailable, use Pinnacle ---
                     else if (pinny && pinny['Over'] && pinny['Under']) {
                         targetLine = pinny['Over'].point;
                         fairProb = getFairProbability(pinny['Over'].price, pinny['Under'].price);
                         benchmarkName = "Pinnacle";
                     }
                     
-                    // If neither bookmaker has a complete two-way market, skip this play
                     if (fairProb === null || targetLine === null) continue;
                     
-                    // Find the best available retail odds for that exact target line
                     let bestRetailOdds = -Infinity;
                     let bestRetailBook = "";
                     
@@ -342,13 +408,13 @@ async function scanSlate() {
                     if (!playerId) continue;
                     
                     const isPitcher = marketName.includes("pitcher");
-                    const stats = await fetchPlayerStats(playerId, isPitcher);
-                    if (!stats) continue;
-                    
                     let expectedValue = 0;
                     let matchupData = null;
                     
                     if (isPitcher) {
+                        const stats = await fetchPlayerStats(playerId, true);
+                        if (!stats) continue;
+
                         if (marketName === "pitcher_strikeouts" && stats.gamesStarted > 0) {
                             expectedValue = stats.strikeouts / stats.gamesStarted;
                         } else if (marketName === "pitcher_outs" && stats.gamesStarted > 0) {
@@ -357,7 +423,11 @@ async function scanSlate() {
                             expectedValue = totalOuts / stats.gamesStarted;
                         }
                     } else {
-                        let batterTeam = stats.team ? stats.team.name : "";
+                        // Locate the batter's team to find opposing pitcher
+                        const fallbackStats = await fetchPlayerStats(playerId, false);
+                        if (!fallbackStats) continue;
+                        
+                        let batterTeam = fallbackStats.team ? fallbackStats.team.name : "";
                         let opposingTeam = "";
                         
                         if (batterTeam === game.home_team) opposingTeam = game.away_team;
@@ -373,8 +443,17 @@ async function scanSlate() {
                             if (altMatch) opposingPitcher = teamStarters[altMatch];
                         }
                         
-                        // Strict filter: skip batter if starting pitcher is unannounced
                         if (!opposingPitcher) continue;
+                        
+                        // Execute Platoon Split Math
+                        const pitcherHand = opposingPitcher.hand; 
+                        const sitCode = pitcherHand === 'L' ? 'vl' : 'vr';
+                        
+                        let stats = await fetchBatterSplits(playerId, sitCode);
+                        // Fallback to overall season average if split data is empty/null
+                        if (!stats || stats.gamesPlayed === 0) {
+                            stats = fallbackStats; 
+                        }
                         
                         const pitcherStats = await fetchPlayerStats(opposingPitcher.id, true);
                         let multiplier = 1.0;
@@ -392,25 +471,33 @@ async function scanSlate() {
                         }
                         
                         multiplier = Math.max(0.60, Math.min(multiplier, 1.40));
+                        // Apply Park Factor on top of Pitcher Multiplier
+                        const finalMultiplier = multiplier * currentParkFactor;
                         
                         if (marketName === "batter_total_bases" && stats.gamesPlayed > 0) {
-                            expectedValue = (stats.totalBases / stats.gamesPlayed) * multiplier;
+                            expectedValue = (stats.totalBases / stats.gamesPlayed) * finalMultiplier;
                         } else if (marketName === "batter_home_runs" && stats.gamesPlayed > 0) {
                             const hrCount = stats.homeRuns || 0;
-                            expectedValue = (hrCount / stats.gamesPlayed) * multiplier;
+                            expectedValue = (hrCount / stats.gamesPlayed) * finalMultiplier;
                         }
                         
                         if (expectedValue > 0) {
-                            matchupData = { pitcherName: opposingPitcher.name, multiplier: multiplier };
+                            matchupData = { 
+                                pitcherName: opposingPitcher.name, 
+                                multiplier: finalMultiplier, 
+                                pitcherHand: pitcherHand,
+                                parkFactor: currentParkFactor
+                            };
                         }
                     }
                     
                     if (expectedValue > 0) {
                         const retailProb = bestRetailOdds > 0 ? 100 / (bestRetailOdds + 100) : Math.abs(bestRetailOdds) / (Math.abs(bestRetailOdds) + 100);
                         const isTopDownEV = retailProb < fairProb;
-                        const evResult = runSimulation(expectedValue, targetLine, retailProb);
+                        const evResult = runSimulation(expectedValue, targetLine, retailProb, !isPitcher);
                         
-                        if (evResult.isPositiveEV) {
+                        // Strict Edge Filter: Only allow plays with 3.00%+ Edge
+                        if (evResult.isPositiveEV && evResult.edge >= MIN_EDGE) {
                             globalPlays.push({
                                 playerName: playerName,
                                 marketName: marketName,
@@ -432,7 +519,7 @@ async function scanSlate() {
 
         globalPlays.sort((a, b) => b.evResult.edge - a.evResult.edge);
         renderCards();
-        updateStatus(`Scan complete. Displaying ${globalPlays.length} +EV plays.`);
+        updateStatus(`Scan complete. Displaying ${globalPlays.length} premium +EV plays.`);
     } catch (error) {
         updateStatus("Error fetching API data. Check console.");
         console.error(error);
