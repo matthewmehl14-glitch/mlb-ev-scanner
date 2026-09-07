@@ -307,12 +307,17 @@ async function scanSlate() {
     }
     
     const targetBookmakers = "pinnacle,williamhill_us,draftkings,fanatics,fanduel,novig,espnbet,betmgm";
-    // Strikeouts removed to save credits
     const marketsToScan = "pitcher_outs,batter_total_bases,batter_home_runs";
     
     try {
         const eventsResponse = await fetch(`https://api.the-odds-api.com/v4/sports/baseball_mlb/events?apiKey=${apiKey}`);
         const events = await eventsResponse.json();
+        
+        // INTERCEPT API ERRORS (e.g. Invalid Key, Quota Exceeded)
+        if (!Array.isArray(events)) {
+            throw new Error(events.message || "The API returned an unexpected response format.");
+        }
+        
         const currentTime = new Date(); 
         
         for (const game of events) {
@@ -323,7 +328,6 @@ async function scanSlate() {
             const timeString = gameDate.toLocaleTimeString('en-US', { timeZone: 'America/Chicago', hour: 'numeric', minute: '2-digit', hour12: true });
             const currentParkFactor = getParkFactor(game.home_team);
             
-            // Reverted back to the event-specific endpoint required for Player Props
             const oddsUrl = `https://api.the-odds-api.com/v4/sports/baseball_mlb/events/${game.id}/odds?apiKey=${apiKey}&markets=${marketsToScan}&bookmakers=${targetBookmakers}&oddsFormat=american`;
             let oddsResponse;
             try {
@@ -331,6 +335,12 @@ async function scanSlate() {
             } catch(e) { continue; }
             
             let oddsData = await oddsResponse.json();
+            
+            // If the specific game request throws an API error, throw it so the mobile screen catches it
+            if (oddsData.message) {
+                throw new Error(oddsData.message);
+            }
+            
             if (!oddsData.bookmakers || oddsData.bookmakers.length === 0) continue;
             
             const marketDict = {};
@@ -513,7 +523,15 @@ async function scanSlate() {
         renderCards();
         updateStatus(`Scan complete. Displaying ${globalPlays.length} premium +EV plays.`);
     } catch (error) {
-        updateStatus("Error fetching API data. Check console.");
+        updateStatus(`Error: ${error.message}`);
+        // PRINT THE EXACT ERROR DIRECTLY TO THE DASHBOARD SCREEN
+        document.getElementById("results-grid").innerHTML = `
+            <div class="col-span-full text-red-400 p-6 bg-red-900/20 border border-red-500 rounded text-center mt-4">
+                <h3 class="text-xl font-bold mb-2">API Connection Failed</h3>
+                <p class="font-mono text-sm">${error.message}</p>
+                <p class="mt-4 text-gray-300 text-sm">If you just updated the code, wait 1 minute for GitHub to finish deploying.</p>
+            </div>
+        `;
         console.error(error);
     }
 }
