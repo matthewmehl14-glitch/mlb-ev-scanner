@@ -307,12 +307,18 @@ async function scanSlate() {
     }
     
     const targetBookmakers = "pinnacle,williamhill_us,draftkings,fanatics,fanduel,novig,espnbet,betmgm";
-    const marketsToScan = "pitcher_strikeouts,pitcher_outs,batter_total_bases,batter_home_runs";
+    // REMOVED pitcher_strikeouts to save credits
+    const marketsToScan = "pitcher_outs,batter_total_bases,batter_home_runs";
     
     try {
-        const eventsResponse = await fetch(`https://api.the-odds-api.com/v4/sports/baseball_mlb/events?apiKey=${apiKey}`);
-        const events = await eventsResponse.json();
+        updateStatus("Fetching Odds from API...");
         const currentTime = new Date(); 
+        
+        // MASSIVE OPTIMIZATION: Fetch all games in ONE request instead of querying by game.id
+        const oddsUrl = `https://api.the-odds-api.com/v4/sports/baseball_mlb/odds?apiKey=${apiKey}&markets=${marketsToScan}&bookmakers=${targetBookmakers}&oddsFormat=american`;
+        
+        let oddsResponse = await fetch(oddsUrl);
+        let events = await oddsResponse.json();
         
         for (const game of events) {
             const gameDate = new Date(game.commence_time);
@@ -322,17 +328,11 @@ async function scanSlate() {
             const timeString = gameDate.toLocaleTimeString('en-US', { timeZone: 'America/Chicago', hour: 'numeric', minute: '2-digit', hour12: true });
             const currentParkFactor = getParkFactor(game.home_team);
             
-            const oddsUrl = `https://api.the-odds-api.com/v4/sports/baseball_mlb/events/${game.id}/odds?apiKey=${apiKey}&markets=${marketsToScan}&bookmakers=${targetBookmakers}&oddsFormat=american`;
-            let oddsResponse;
-            try {
-                oddsResponse = await fetch(oddsUrl);
-            } catch(e) { continue; }
-            
-            let oddsData = await oddsResponse.json();
-            if (!oddsData.bookmakers || oddsData.bookmakers.length === 0) continue;
+            // Skip the game if there are no bookmakers available yet
+            if (!game.bookmakers || game.bookmakers.length === 0) continue;
             
             const marketDict = {};
-            for (const bookmaker of oddsData.bookmakers) {
+            for (const bookmaker of game.bookmakers) {
                 const bookName = bookmaker.title;
                 
                 for (const market of bookmaker.markets) {
@@ -410,9 +410,7 @@ async function scanSlate() {
                         const stats = await fetchPlayerStats(playerId, true);
                         if (!stats) continue;
 
-                        if (marketName === "pitcher_strikeouts" && stats.gamesStarted > 0) {
-                            expectedValue = stats.strikeouts / stats.gamesStarted;
-                        } else if (marketName === "pitcher_outs" && stats.gamesStarted > 0) {
+                        if (marketName === "pitcher_outs" && stats.gamesStarted > 0) {
                             let ipParts = stats.inningsPitched.split('.');
                             let totalOuts = (parseInt(ipParts[0]) * 3) + (ipParts.length > 1 ? parseInt(ipParts[1]) : 0);
                             expectedValue = totalOuts / stats.gamesStarted;
@@ -465,9 +463,7 @@ async function scanSlate() {
                         multiplier = Math.max(0.60, Math.min(multiplier, 1.40));
                         const finalMultiplier = multiplier * currentParkFactor;
 
-                        // --- TESTING LOG INJECTED HERE ---
                         console.log(`TESTING ${playerName} | vs ${pitcherHand}HP | Park Factor: ${currentParkFactor.toFixed(2)} | Games in this Split: ${stats.gamesPlayed}`);
-                        // ---------------------------------
                         
                         if (marketName === "batter_total_bases" && stats.gamesPlayed > 0) {
                             expectedValue = (stats.totalBases / stats.gamesPlayed) * finalMultiplier;
