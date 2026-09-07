@@ -19,7 +19,6 @@ function getParkFactor(homeTeamName) {
 
 // --- Core Math Engine (Upgraded to Negative Binomial) ---
 function getNegativeBinomialRandom(mean, varianceMultiplier) {
-    // If variance is essentially equal to mean, use standard Poisson (e.g., Pitcher Ks)
     if (varianceMultiplier <= 1.001) {
         let L = Math.exp(-mean);
         let k = 0; let p = 1;
@@ -27,7 +26,6 @@ function getNegativeBinomialRandom(mean, varianceMultiplier) {
         return k - 1;
     }
     
-    // Negative Binomial logic for overdispersed baseball stats (e.g., Total Bases)
     const p = 1 / varianceMultiplier;
     const r = (mean * p) / (1 - p);
     
@@ -38,16 +36,14 @@ function getNegativeBinomialRandom(mean, varianceMultiplier) {
     
     while (true) {
         cumProb += prob;
-        if (u < cumProb || k > 50) return k; // Cap at 50 to prevent infinite loops on wild data
+        if (u < cumProb || k > 50) return k; 
         k++;
-        // PMF recursive formula
         prob = prob * (k + r - 1) / k * (1 - p);
     }
 }
 
 function runSimulation(expectedValue, targetLine, fairProb, isBatter, sims = 10000) {
     let hits = 0;
-    // Apply 1.5x variance dispersion to batters, 1.0x (Poisson) to pitchers
     const varianceMultiplier = isBatter ? 1.5 : 1.0; 
     
     for (let i = 0; i < sims; i++) {
@@ -138,10 +134,10 @@ async function getPitcherHand(pitcherId) {
     try {
         const response = await fetch(`https://statsapi.mlb.com/api/v1/people/${pitcherId}`);
         const data = await response.json();
-        const hand = data.people[0].pitchHand.code; // 'L' or 'R'
+        const hand = data.people[0].pitchHand.code; 
         statsCache[cacheKey] = hand;
         return hand;
-    } catch { return 'R'; } // Default to Righty if API fails
+    } catch { return 'R'; } 
 }
 
 // --- UI Controls & Filters ---
@@ -222,7 +218,6 @@ function appendResultCard(player, market, line, evResult, bestRetailOdds, bestRe
     const fairOddsStr = getAmericanOdds(fairProb);
     const retailOddsStr = bestRetailOdds > 0 ? `+${bestRetailOdds}` : `${bestRetailOdds}`;
     
-    // 1/4 Kelly Calculation using Best Retail Odds (Capped at 2.00 Units)
     const b = bestRetailOdds > 0 ? (bestRetailOdds / 100) : (100 / Math.abs(bestRetailOdds));
     const p = evResult.hitRate;
     const q = 1 - p;
@@ -423,7 +418,6 @@ async function scanSlate() {
                             expectedValue = totalOuts / stats.gamesStarted;
                         }
                     } else {
-                        // Locate the batter's team to find opposing pitcher
                         const fallbackStats = await fetchPlayerStats(playerId, false);
                         if (!fallbackStats) continue;
                         
@@ -445,12 +439,10 @@ async function scanSlate() {
                         
                         if (!opposingPitcher) continue;
                         
-                        // Execute Platoon Split Math
                         const pitcherHand = opposingPitcher.hand; 
                         const sitCode = pitcherHand === 'L' ? 'vl' : 'vr';
                         
                         let stats = await fetchBatterSplits(playerId, sitCode);
-                        // Fallback to overall season average if split data is empty/null
                         if (!stats || stats.gamesPlayed === 0) {
                             stats = fallbackStats; 
                         }
@@ -471,8 +463,11 @@ async function scanSlate() {
                         }
                         
                         multiplier = Math.max(0.60, Math.min(multiplier, 1.40));
-                        // Apply Park Factor on top of Pitcher Multiplier
                         const finalMultiplier = multiplier * currentParkFactor;
+
+                        // --- TESTING LOG INJECTED HERE ---
+                        console.log(`TESTING ${playerName} | vs ${pitcherHand}HP | Park Factor: ${currentParkFactor.toFixed(2)} | Games in this Split: ${stats.gamesPlayed}`);
+                        // ---------------------------------
                         
                         if (marketName === "batter_total_bases" && stats.gamesPlayed > 0) {
                             expectedValue = (stats.totalBases / stats.gamesPlayed) * finalMultiplier;
@@ -496,7 +491,6 @@ async function scanSlate() {
                         const isTopDownEV = retailProb < fairProb;
                         const evResult = runSimulation(expectedValue, targetLine, retailProb, !isPitcher);
                         
-                        // Strict Edge Filter: Only allow plays with 3.00%+ Edge
                         if (evResult.isPositiveEV && evResult.edge >= MIN_EDGE) {
                             globalPlays.push({
                                 playerName: playerName,
