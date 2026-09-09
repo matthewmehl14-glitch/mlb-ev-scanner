@@ -42,12 +42,16 @@ function getNegativeBinomialRandom(mean, varianceMultiplier) {
     }
 }
 
-function runSimulation(expectedValue, targetLine, fairProb, isBatter, sims = 10000) {
+// Rewritten to dynamically handle both Over and Under simulations
+function runSimulation(expectedValue, targetLine, fairProb, isBatter, side, sims = 10000) {
     let hits = 0;
     const varianceMultiplier = isBatter ? 1.5 : 1.0; 
     
     for (let i = 0; i < sims; i++) {
-        if (getNegativeBinomialRandom(expectedValue, varianceMultiplier) > targetLine) {
+        let simVal = getNegativeBinomialRandom(expectedValue, varianceMultiplier);
+        if (side === 'Over' && simVal > targetLine) {
+            hits++;
+        } else if (side === 'Under' && simVal < targetLine) {
             hits++;
         }
     }
@@ -56,11 +60,15 @@ function runSimulation(expectedValue, targetLine, fairProb, isBatter, sims = 100
     return { hitRate: hitRate, edge: edge, isPositiveEV: edge > 0 };
 }
 
-function getFairProbability(oddsOver, oddsUnder) {
+// Extracts DEVIG math for both sides of the line simultaneously
+function getFairProbabilities(oddsOver, oddsUnder) {
     let probOver = oddsOver > 0 ? 100 / (oddsOver + 100) : Math.abs(oddsOver) / (Math.abs(oddsOver) + 100);
     let probUnder = oddsUnder > 0 ? 100 / (oddsUnder + 100) : Math.abs(oddsUnder) / (Math.abs(oddsUnder) + 100);
     let vig = probOver + probUnder;
-    return probOver / vig;
+    return {
+        over: probOver / vig,
+        under: probUnder / vig
+    };
 }
 
 // --- Odds Conversion ---
@@ -204,14 +212,14 @@ function renderCards() {
         
     for (const play of playsToShow) {
         appendResultCard(
-            play.playerName, play.marketName, play.targetLine, play.evResult, 
+            play.playerName, play.marketName, play.targetLine, play.side, play.evResult, 
             play.bestRetailOdds, play.bestRetailBook, play.fairProb, 
             play.gameTime, play.matchupData, play.isTopDownEV, play.benchmarkName
         );
     }
 }
 
-function appendResultCard(player, market, line, evResult, bestRetailOdds, bestRetailBook, fairProb, gameTime, matchupData, isTopDownEV, benchmarkName) {
+function appendResultCard(player, market, line, side, evResult, bestRetailOdds, bestRetailBook, fairProb, gameTime, matchupData, isTopDownEV, benchmarkName) {
     const grid = document.getElementById("results-grid");
     const edgePercent = (evResult.edge * 100).toFixed(2);
     const hitRatePercent = (evResult.hitRate * 100).toFixed(2);
@@ -233,6 +241,7 @@ function appendResultCard(player, market, line, evResult, bestRetailOdds, bestRe
         ? `<span class="bg-green-900 text-green-400 text-[10px] px-2 py-1 rounded shadow border border-green-500 font-bold whitespace-nowrap ml-2">🔥 Sharp Value</span>` 
         : ``;
     const retailColor = isTopDownEV ? "text-green-400 font-bold" : "text-red-400";
+    const sideColor = side === "Over" ? "text-white" : "text-yellow-300"; 
 
     const matchupHtml = matchupData 
         ? `<div class="text-xs text-purple-400 font-mono mb-2 mt-[-4px]">vs. ${matchupData.pitcherName} (${matchupData.pitcherHand}) | PF: x${matchupData.parkFactor.toFixed(2)}</div>`
@@ -249,7 +258,7 @@ function appendResultCard(player, market, line, evResult, bestRetailOdds, bestRe
         ${matchupHtml}
         <div class="flex justify-between text-sm mb-1 mt-2">
             <span class="text-gray-300">Target Line:</span>
-            <span class="font-bold text-white">Over ${line}</span>
+            <span class="font-bold ${sideColor}">${side} ${line}</span>
         </div>
         <div class="flex justify-between text-sm mb-1">
             <span class="text-gray-300">${benchmarkName} Fair Odds:</span>
@@ -313,7 +322,6 @@ async function scanSlate() {
         const eventsResponse = await fetch(`https://api.the-odds-api.com/v4/sports/baseball_mlb/events?apiKey=${apiKey}`);
         const events = await eventsResponse.json();
         
-        // INTERCEPT API ERRORS (e.g. Invalid Key, Quota Exceeded)
         if (!Array.isArray(events)) {
             throw new Error(events.message || "The API returned an unexpected response format.");
         }
@@ -336,7 +344,6 @@ async function scanSlate() {
             
             let oddsData = await oddsResponse.json();
             
-            // If the specific game request throws an API error, throw it so the mobile screen catches it
             if (oddsData.message) {
                 throw new Error(oddsData.message);
             }
@@ -381,35 +388,46 @@ async function scanSlate() {
                     const pinny = lines.pinnacle;
                     
                     let targetLine = null;
-                    let fairProb = null;
+                    let fairProbOver = null;
+                    let fairProbUnder = null;
                     let benchmarkName = "";
                     
                     if (fd && fd['Over'] && fd['Under']) {
                         targetLine = fd['Over'].point;
-                        fairProb = getFairProbability(fd['Over'].price, fd['Under'].price);
+                        const probs = getFairProbabilities(fd['Over'].price, fd['Under'].price);
+                        fairProbOver = probs.over;
+                        fairProbUnder = probs.under;
                         benchmarkName = "FanDuel";
                     } 
                     else if (pinny && pinny['Over'] && pinny['Under']) {
                         targetLine = pinny['Over'].point;
-                        fairProb = getFairProbability(pinny['Over'].price, pinny['Under'].price);
+                        const probs = getFairProbabilities(pinny['Over'].price, pinny['Under'].price);
+                        fairProbOver = probs.over;
+                        fairProbUnder = probs.under;
                         benchmarkName = "Pinnacle";
                     }
                     
-                    if (fairProb === null || targetLine === null) continue;
+                    if (targetLine === null) continue;
                     
-                    let bestRetailOdds = -Infinity;
-                    let bestRetailBook = "";
+                    let bestRetailOddsOver = -Infinity;
+                    let bestRetailBookOver = "";
+                    let bestRetailOddsUnder = -Infinity;
+                    let bestRetailBookUnder = "";
                     
                     for (const [retailBookName, retailLines] of Object.entries(lines.retail)) {
                         if (retailLines['Over'] && retailLines['Over'].point === targetLine) {
-                            if (retailLines['Over'].price > bestRetailOdds) {
-                                bestRetailOdds = retailLines['Over'].price;
-                                bestRetailBook = retailBookName;
+                            if (retailLines['Over'].price > bestRetailOddsOver) {
+                                bestRetailOddsOver = retailLines['Over'].price;
+                                bestRetailBookOver = retailBookName;
+                            }
+                        }
+                        if (retailLines['Under'] && retailLines['Under'].point === targetLine) {
+                            if (retailLines['Under'].price > bestRetailOddsUnder) {
+                                bestRetailOddsUnder = retailLines['Under'].price;
+                                bestRetailBookUnder = retailBookName;
                             }
                         }
                     }
-                    
-                    if (bestRetailOdds === -Infinity) continue; 
                     
                     const playerId = await fetchMlbPlayerId(playerName);
                     if (!playerId) continue;
@@ -495,24 +513,52 @@ async function scanSlate() {
                     }
                     
                     if (expectedValue > 0) {
-                        const retailProb = bestRetailOdds > 0 ? 100 / (bestRetailOdds + 100) : Math.abs(bestRetailOdds) / (Math.abs(bestRetailOdds) + 100);
-                        const isTopDownEV = retailProb < fairProb;
-                        const evResult = runSimulation(expectedValue, targetLine, retailProb, !isPitcher);
-                        
-                        if (evResult.isPositiveEV && evResult.edge >= MIN_EDGE) {
-                            globalPlays.push({
-                                playerName: playerName,
-                                marketName: marketName,
-                                targetLine: targetLine,
-                                evResult: evResult,
-                                bestRetailOdds: bestRetailOdds,
-                                bestRetailBook: bestRetailBook,
-                                fairProb: fairProb,
-                                benchmarkName: benchmarkName,
-                                gameTime: timeString,
-                                matchupData: matchupData,
-                                isTopDownEV: isTopDownEV
-                            });
+                        // Evaluate OVER
+                        if (bestRetailOddsOver > -Infinity) {
+                            const retailProbOver = bestRetailOddsOver > 0 ? 100 / (bestRetailOddsOver + 100) : Math.abs(bestRetailOddsOver) / (Math.abs(bestRetailOddsOver) + 100);
+                            const isTopDownEVOver = retailProbOver < fairProbOver;
+                            const evResultOver = runSimulation(expectedValue, targetLine, retailProbOver, !isPitcher, 'Over');
+                            
+                            if (evResultOver.isPositiveEV && evResultOver.edge >= MIN_EDGE) {
+                                globalPlays.push({
+                                    playerName: playerName,
+                                    marketName: marketName,
+                                    targetLine: targetLine,
+                                    side: 'Over',
+                                    evResult: evResultOver,
+                                    bestRetailOdds: bestRetailOddsOver,
+                                    bestRetailBook: bestRetailBookOver,
+                                    fairProb: fairProbOver,
+                                    benchmarkName: benchmarkName,
+                                    gameTime: timeString,
+                                    matchupData: matchupData,
+                                    isTopDownEV: isTopDownEVOver
+                                });
+                            }
+                        }
+
+                        // Evaluate UNDER
+                        if (bestRetailOddsUnder > -Infinity) {
+                            const retailProbUnder = bestRetailOddsUnder > 0 ? 100 / (bestRetailOddsUnder + 100) : Math.abs(bestRetailOddsUnder) / (Math.abs(bestRetailOddsUnder) + 100);
+                            const isTopDownEVUnder = retailProbUnder < fairProbUnder;
+                            const evResultUnder = runSimulation(expectedValue, targetLine, retailProbUnder, !isPitcher, 'Under');
+                            
+                            if (evResultUnder.isPositiveEV && evResultUnder.edge >= MIN_EDGE) {
+                                globalPlays.push({
+                                    playerName: playerName,
+                                    marketName: marketName,
+                                    targetLine: targetLine,
+                                    side: 'Under',
+                                    evResult: evResultUnder,
+                                    bestRetailOdds: bestRetailOddsUnder,
+                                    bestRetailBook: bestRetailBookUnder,
+                                    fairProb: fairProbUnder,
+                                    benchmarkName: benchmarkName,
+                                    gameTime: timeString,
+                                    matchupData: matchupData,
+                                    isTopDownEV: isTopDownEVUnder
+                                });
+                            }
                         }
                     }
                 }
@@ -524,7 +570,6 @@ async function scanSlate() {
         updateStatus(`Scan complete. Displaying ${globalPlays.length} premium +EV plays.`);
     } catch (error) {
         updateStatus(`Error: ${error.message}`);
-        // PRINT THE EXACT ERROR DIRECTLY TO THE DASHBOARD SCREEN
         document.getElementById("results-grid").innerHTML = `
             <div class="col-span-full text-red-400 p-6 bg-red-900/20 border border-red-500 rounded text-center mt-4">
                 <h3 class="text-xl font-bold mb-2">API Connection Failed</h3>
