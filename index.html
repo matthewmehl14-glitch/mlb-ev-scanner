@@ -21,11 +21,14 @@
         <!-- Dashboard Section -->
         <div id="dashboard" class="hidden">
             <div class="flex flex-col md:flex-row justify-between items-center mb-6 gap-4">
-                <div class="flex items-center">
+                <div class="flex items-center flex-wrap gap-2">
                     <button onclick="scanSlate()" class="bg-green-600 hover:bg-green-500 text-white font-bold py-3 px-6 rounded shadow-lg transition-transform transform hover:scale-105">
                         Scan Today's Slate
                     </button>
-                    <button onclick="clearApiKey()" class="text-sm text-gray-400 underline hover:text-white ml-4">Change API Key</button>
+                    <button onclick="downloadLog()" class="bg-purple-600 hover:bg-purple-500 text-white font-bold py-3 px-6 rounded shadow-lg transition-transform transform hover:scale-105">
+                        Export to CSV
+                    </button>
+                    <button onclick="clearApiKey()" class="text-sm text-gray-400 underline hover:text-white ml-2">Change API Key</button>
                 </div>
                 <div id="status-text" class="text-gray-400 font-mono text-sm animate-pulse">Waiting to scan...</div>
             </div>
@@ -41,12 +44,12 @@
 
             <!-- Results Grid -->
             <div id="results-grid" class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-                <!-- Cards will be injected here via JavaScript -->
+                <!-- Cards injected via JavaScript -->
             </div>
         </div>
     </div>
 
-    <!-- CACHE BUSTER BUMPED TO v=3 -->
-    <script src="app.js?v=3"></script>
+    <!-- Cache Buster v=4 -->
+    <script src="app.js?v=4"></script>
 </body>
 </html>
