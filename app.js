@@ -42,7 +42,6 @@ function getNegativeBinomialRandom(mean, varianceMultiplier) {
     }
 }
 
-// Rewritten to dynamically handle both Over and Under simulations
 function runSimulation(expectedValue, targetLine, fairProb, isBatter, side, sims = 10000) {
     let hits = 0;
     const varianceMultiplier = isBatter ? 1.5 : 1.0; 
@@ -60,7 +59,6 @@ function runSimulation(expectedValue, targetLine, fairProb, isBatter, side, sims
     return { hitRate: hitRate, edge: edge, isPositiveEV: edge > 0 };
 }
 
-// Extracts DEVIG math for both sides of the line simultaneously
 function getFairProbabilities(oddsOver, oddsUnder) {
     let probOver = oddsOver > 0 ? 100 / (oddsOver + 100) : Math.abs(oddsOver) / (Math.abs(oddsOver) + 100);
     let probUnder = oddsUnder > 0 ? 100 / (oddsUnder + 100) : Math.abs(oddsUnder) / (Math.abs(oddsUnder) + 100);
@@ -214,28 +212,18 @@ function renderCards() {
         appendResultCard(
             play.playerName, play.marketName, play.targetLine, play.side, play.evResult, 
             play.bestRetailOdds, play.bestRetailBook, play.fairProb, 
-            play.gameTime, play.matchupData, play.isTopDownEV, play.benchmarkName
+            play.gameTime, play.matchupData, play.isTopDownEV, play.benchmarkName, play.unitSize
         );
     }
 }
 
-function appendResultCard(player, market, line, side, evResult, bestRetailOdds, bestRetailBook, fairProb, gameTime, matchupData, isTopDownEV, benchmarkName) {
+function appendResultCard(player, market, line, side, evResult, bestRetailOdds, bestRetailBook, fairProb, gameTime, matchupData, isTopDownEV, benchmarkName, unitSize) {
     const grid = document.getElementById("results-grid");
     const edgePercent = (evResult.edge * 100).toFixed(2);
     const hitRatePercent = (evResult.hitRate * 100).toFixed(2);
     const fairOddsStr = getAmericanOdds(fairProb);
     const retailOddsStr = bestRetailOdds > 0 ? `+${bestRetailOdds}` : `${bestRetailOdds}`;
-    
-    const b = bestRetailOdds > 0 ? (bestRetailOdds / 100) : (100 / Math.abs(bestRetailOdds));
-    const p = evResult.hitRate;
-    const q = 1 - p;
-    const fullKelly = ((b * p) - q) / b;
-    const quarterKellyPct = fullKelly > 0 ? (fullKelly * 0.25) : 0;
-    
-    let unitSize = quarterKellyPct * 100;
-    if (unitSize > 2.00) unitSize = 2.00;
-    
-    const kellyText = fullKelly > 0 ? `${unitSize.toFixed(2)}u` : "0.00u";
+    const kellyText = unitSize > 0 ? `${unitSize.toFixed(2)}u` : "0.00u";
 
     const topDownBadge = isTopDownEV 
         ? `<span class="bg-green-900 text-green-400 text-[10px] px-2 py-1 rounded shadow border border-green-500 font-bold whitespace-nowrap ml-2">🔥 Sharp Value</span>` 
@@ -284,6 +272,62 @@ function appendResultCard(player, market, line, side, evResult, bestRetailOdds, 
     grid.appendChild(card);
 }
 
+// --- CSV Exporter (Option 1) ---
+function downloadLog() {
+    if (globalPlays.length === 0) {
+        alert("No plays to export! Run a scan first.");
+        return;
+    }
+
+    const headers = [
+        "Time", "Player", "Market", "Side", "Line", 
+        "Benchmark", "Fair Odds", "Fair Prob %", 
+        "Best Book", "Best Odds", "Sim Hit Rate %", "Edge %", 
+        "Unit Rec", "Sharp Value", "Opposing Pitcher", "Pitcher Hand", "Park Factor"
+    ];
+
+    let csvRows = [headers.join(",")];
+
+    globalPlays.forEach(play => {
+        const fairOddsStr = getAmericanOdds(play.fairProb);
+        const retailOddsStr = play.bestRetailOdds > 0 ? `+${play.bestRetailOdds}` : `${play.bestRetailOdds}`;
+        const pName = play.matchupData ? `"${play.matchupData.pitcherName}"` : "N/A";
+        const pHand = play.matchupData ? play.matchupData.pitcherHand : "N/A";
+        const pf = play.matchupData ? play.matchupData.parkFactor.toFixed(2) : "1.00";
+
+        const row = [
+            `"${play.gameTime} CT"`,
+            `"${play.playerName}"`,
+            `"${play.marketName}"`,
+            play.side,
+            play.targetLine,
+            `"${play.benchmarkName}"`,
+            fairOddsStr,
+            (play.fairProb * 100).toFixed(2),
+            `"${play.bestRetailBook}"`,
+            retailOddsStr,
+            (play.evResult.hitRate * 100).toFixed(2),
+            (play.evResult.edge * 100).toFixed(2),
+            play.unitSize.toFixed(2),
+            play.isTopDownEV ? "YES" : "NO",
+            pName,
+            pHand,
+            pf
+        ];
+        csvRows.push(row.join(","));
+    });
+
+    const csvData = new Blob([csvRows.join("\n")], { type: "text/csv;charset=utf-8;" });
+    const csvUrl = URL.createObjectURL(csvData);
+    const link = document.createElement("a");
+    link.href = csvUrl;
+    link.download = `MLB_EV_Scan_${new Date().toISOString().split('T')[0]}.csv`;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(csvUrl);
+}
+
 // --- Main Orchestrator ---
 async function scanSlate() {
     const apiKey = localStorage.getItem("OddsApiKey");
@@ -315,7 +359,7 @@ async function scanSlate() {
         console.error("Warning: Could not fetch probable pitchers.", error);
     }
     
-    const targetBookmakers = "pinnacle,williamhill_us,draftkings,fanatics,fanduel,novig,espnbet,betmgm";
+    const targetBookmakers = "pinnacle,willhill_us,draftkings,fanatics,fanduel,novig,espnbet,betmgm";
     const marketsToScan = "pitcher_outs,batter_total_bases,batter_home_runs";
     
     try {
@@ -520,6 +564,14 @@ async function scanSlate() {
                             const evResultOver = runSimulation(expectedValue, targetLine, retailProbOver, !isPitcher, 'Over');
                             
                             if (evResultOver.isPositiveEV && evResultOver.edge >= MIN_EDGE) {
+                                const b = bestRetailOddsOver > 0 ? (bestRetailOddsOver / 100) : (100 / Math.abs(bestRetailOddsOver));
+                                const p = evResultOver.hitRate;
+                                const q = 1 - p;
+                                const fullKelly = ((b * p) - q) / b;
+                                const quarterKellyPct = fullKelly > 0 ? (fullKelly * 0.25) : 0;
+                                let uSize = quarterKellyPct * 100;
+                                if (uSize > 2.00) uSize = 2.00;
+
                                 globalPlays.push({
                                     playerName: playerName,
                                     marketName: marketName,
@@ -532,7 +584,8 @@ async function scanSlate() {
                                     benchmarkName: benchmarkName,
                                     gameTime: timeString,
                                     matchupData: matchupData,
-                                    isTopDownEV: isTopDownEVOver
+                                    isTopDownEV: isTopDownEVOver,
+                                    unitSize: uSize
                                 });
                             }
                         }
@@ -544,6 +597,14 @@ async function scanSlate() {
                             const evResultUnder = runSimulation(expectedValue, targetLine, retailProbUnder, !isPitcher, 'Under');
                             
                             if (evResultUnder.isPositiveEV && evResultUnder.edge >= MIN_EDGE) {
+                                const b = bestRetailOddsUnder > 0 ? (bestRetailOddsUnder / 100) : (100 / Math.abs(bestRetailOddsUnder));
+                                const p = evResultUnder.hitRate;
+                                const q = 1 - p;
+                                const fullKelly = ((b * p) - q) / b;
+                                const quarterKellyPct = fullKelly > 0 ? (fullKelly * 0.25) : 0;
+                                let uSize = quarterKellyPct * 100;
+                                if (uSize > 2.00) uSize = 2.00;
+
                                 globalPlays.push({
                                     playerName: playerName,
                                     marketName: marketName,
@@ -556,7 +617,8 @@ async function scanSlate() {
                                     benchmarkName: benchmarkName,
                                     gameTime: timeString,
                                     matchupData: matchupData,
-                                    isTopDownEV: isTopDownEVUnder
+                                    isTopDownEV: isTopDownEVUnder,
+                                    unitSize: uSize
                                 });
                             }
                         }
