@@ -1,5 +1,5 @@
 // --- Global Configurations ---
-const MIN_EDGE = 0.03; // 3.00% Minimum Edge Filter
+const MIN_EV = 0.03; // 3.00% Minimum Expected Value Filter
 
 const PARK_FACTORS = {
     "Colorado Rockies": 1.12,
@@ -10,55 +10,38 @@ const PARK_FACTORS = {
     "Baltimore Orioles": 0.96,
     "San Diego Padres": 0.95,
     "Seattle Mariners": 0.93
-    // All other stadiums default to 1.00
 };
 
 function getParkFactor(homeTeamName) {
     return PARK_FACTORS[homeTeamName] || 1.00;
 }
 
-// --- Core Math Engine ---
-function getNegativeBinomialRandom(mean, varianceMultiplier) {
-    if (varianceMultiplier <= 1.001) {
-        let L = Math.exp(-mean);
-        let k = 0; let p = 1;
-        do { k++; p *= Math.random(); } while (p > L);
-        return k - 1;
-    }
-    
-    const p = 1 / varianceMultiplier;
-    const r = (mean * p) / (1 - p);
-    
-    let u = Math.random();
-    let cumProb = 0;
+// --- Monte Carlo Simulation (Poisson for Outs) ---
+function getPoissonRandom(mean) {
+    let L = Math.exp(-mean);
     let k = 0;
-    let prob = Math.pow(p, r); 
-    
-    while (true) {
-        cumProb += prob;
-        if (u < cumProb || k > 50) return k; 
+    let p = 1;
+    do {
         k++;
-        prob = prob * (k + r - 1) / k * (1 - p);
-    }
+        p *= Math.random();
+    } while (p > L);
+    return k - 1;
 }
 
-function runSimulation(expectedValue, targetLine, fairProb, isBatter, side, sims = 10000) {
+function runSimulation(expectedValue, targetLine, side, sims = 10000) {
     let hits = 0;
-    const varianceMultiplier = isBatter ? 1.5 : 1.0; 
-    
     for (let i = 0; i < sims; i++) {
-        let simVal = getNegativeBinomialRandom(expectedValue, varianceMultiplier);
+        let simVal = getPoissonRandom(expectedValue);
         if (side === 'Over' && simVal > targetLine) {
             hits++;
         } else if (side === 'Under' && simVal < targetLine) {
             hits++;
         }
     }
-    let hitRate = hits / sims;
-    let edge = hitRate - fairProb;
-    return { hitRate: hitRate, edge: edge, isPositiveEV: edge > 0 };
+    return hits / sims;
 }
 
+// Multiplicative De-vigging for Sharp Benchmarks
 function getFairProbabilities(oddsOver, oddsUnder) {
     let probOver = oddsOver > 0 ? 100 / (oddsOver + 100) : Math.abs(oddsOver) / (Math.abs(oddsOver) + 100);
     let probUnder = oddsUnder > 0 ? 100 / (oddsUnder + 100) : Math.abs(oddsUnder) / (Math.abs(oddsUnder) + 100);
@@ -95,19 +78,16 @@ async function fetchMlbPlayerId(playerName) {
     } catch { return null; }
 }
 
-async function fetchPlayerStats(playerId, isPitcher) {
-    const statGroup = isPitcher ? "pitching" : "hitting";
-    const cacheKey = `${playerId}_overall_${statGroup}`;
-    
+async function fetchPlayerStats(playerId) {
+    const cacheKey = `${playerId}_pitching`;
     if (statsCache[cacheKey]) return statsCache[cacheKey];
     
-    const url = `https://statsapi.mlb.com/api/v1/people/${playerId}/stats?stats=season&group=${statGroup}`;
+    const url = `https://statsapi.mlb.com/api/v1/people/${playerId}/stats?stats=season&group=pitching`;
     try {
         const response = await fetch(url);
         const data = await response.json();
         if (data.stats && data.stats[0] && data.stats[0].splits[0]) {
             const stats = data.stats[0].splits[0].stat;
-            stats.team = data.stats[0].splits[0].team; 
             statsCache[cacheKey] = stats;
             return stats;
         }
@@ -191,63 +171,54 @@ function renderCards() {
     }
         
     for (const play of playsToShow) {
-        appendResultCard(
-            play.playerName, play.marketName, play.targetLine, play.side, play.evResult, 
-            play.bestRetailOdds, play.bestRetailBook, play.fairProb, 
-            play.gameTime, play.matchupData, play.isTopDownEV, play.benchmarkName, play.unitSize
-        );
+        appendResultCard(play);
     }
 }
 
-function appendResultCard(player, market, line, side, evResult, bestRetailOdds, bestRetailBook, fairProb, gameTime, matchupData, isTopDownEV, benchmarkName, unitSize) {
+function appendResultCard(play) {
     const grid = document.getElementById("results-grid");
-    const edgePercent = (evResult.edge * 100).toFixed(2);
-    const hitRatePercent = (evResult.hitRate * 100).toFixed(2);
-    const fairOddsStr = getAmericanOdds(fairProb);
-    const retailOddsStr = bestRetailOdds > 0 ? `+${bestRetailOdds}` : `${bestRetailOdds}`;
-    const kellyText = unitSize > 0 ? `${unitSize.toFixed(2)}u` : "0.00u";
+    const evPercent = (play.ev * 100).toFixed(2);
+    const simHitPercent = (play.simHitRate * 100).toFixed(2);
+    const fairOddsStr = getAmericanOdds(play.fairProb);
+    const retailOddsStr = play.bestRetailOdds > 0 ? `+${play.bestRetailOdds}` : `${play.bestRetailOdds}`;
+    const kellyText = play.unitSize > 0 ? `${play.unitSize.toFixed(2)}u` : "0.00u";
 
-    const topDownBadge = isTopDownEV 
+    const topDownBadge = play.isTopDownEV 
         ? `<span class="bg-green-900 text-green-400 text-[10px] px-2 py-1 rounded shadow border border-green-500 font-bold whitespace-nowrap ml-2">🔥 Sharp Value</span>` 
         : ``;
-    const retailColor = isTopDownEV ? "text-green-400 font-bold" : "text-red-400";
-    const sideColor = side === "Over" ? "text-white" : "text-yellow-300"; 
-
-    const matchupHtml = matchupData 
-        ? `<div class="text-xs text-purple-400 font-mono mb-2 mt-[-4px]">vs. ${matchupData.pitcherName} (${matchupData.pitcherHand}) | PF: x${matchupData.parkFactor.toFixed(2)}</div>`
-        : `<div class="mb-2"></div>`;
+    const retailColor = play.isTopDownEV ? "text-green-400 font-bold" : "text-red-400";
+    const sideColor = play.side === "Over" ? "text-white" : "text-yellow-300"; 
 
     const card = document.createElement("div");
     card.className = "bg-gray-800 p-4 rounded-lg border-l-4 border-green-500 shadow-md transition hover:bg-gray-700 flex flex-col";
     card.innerHTML = `
         <div class="flex justify-between items-center mb-1">
-            <div class="text-xs text-gray-400 uppercase">${market.replace(/_/g, ' ')}</div>
-            <div class="text-xs font-bold text-cyan-400">${gameTime} CT</div>
+            <div class="text-xs text-gray-400 uppercase">PITCHER OUTS</div>
+            <div class="text-xs font-bold text-cyan-400">${play.gameTime} CT</div>
         </div>
-        <div class="text-xl font-bold text-white flex items-center flex-wrap">${player} ${topDownBadge}</div>
-        ${matchupHtml}
+        <div class="text-xl font-bold text-white flex items-center flex-wrap">${play.playerName} ${topDownBadge}</div>
         <div class="flex justify-between text-sm mb-1 mt-2">
             <span class="text-gray-300">Target Line:</span>
-            <span class="font-bold ${sideColor}">${side} ${line}</span>
+            <span class="font-bold ${sideColor}">${play.side} ${play.targetLine}</span>
         </div>
         <div class="flex justify-between text-sm mb-1">
-            <span class="text-gray-300">${benchmarkName} Fair Odds:</span>
-            <span class="font-bold text-blue-400">${fairOddsStr}</span>
+            <span class="text-gray-300">${play.benchmarkName} Fair Odds:</span>
+            <span class="font-bold text-blue-400">${fairOddsStr} (${(play.fairProb * 100).toFixed(1)}%)</span>
         </div>
         <div class="flex justify-between text-sm mb-2 pb-2 border-b border-gray-700">
-            <span class="text-gray-300">Best Available (<span class="text-xs text-gray-400">${bestRetailBook}</span>):</span>
+            <span class="text-gray-300">Best Available (<span class="text-xs text-gray-400">${play.bestRetailBook}</span>):</span>
             <span class="${retailColor}">${retailOddsStr}</span>
         </div>
         <div class="flex justify-between text-sm mb-1 pt-1">
-            <span class="text-gray-300">Adj. Sim Hit Rate:</span>
-            <span class="font-bold text-white">${hitRatePercent}%</span>
+            <span class="text-gray-300">Sim Hit Rate:</span>
+            <span class="font-bold text-gray-300">${simHitPercent}%</span>
         </div>
         <div class="flex justify-between items-center mb-2">
-            <span class="text-sm text-gray-400">Monte Carlo Edge:</span>
-            <span class="font-bold text-green-400 bg-green-900/30 px-2 py-1 rounded text-lg">+${edgePercent}%</span>
+            <span class="text-sm text-gray-400">Sharp EV:</span>
+            <span class="font-bold text-green-400 bg-green-900/30 px-2 py-1 rounded text-lg">+${evPercent}%</span>
         </div>
         <div class="mt-1 flex justify-between items-center border-t border-gray-700 pt-3">
-            <span class="text-sm text-gray-400">Unit Size Recommendation:</span>
+            <span class="text-sm text-gray-400">Unit Sizing (1/4 Kelly):</span>
             <span class="font-bold text-yellow-400">${kellyText}</span>
         </div>
     `;
@@ -256,11 +227,10 @@ function appendResultCard(player, market, line, side, evResult, bestRetailOdds, 
 
 // --- CSV Exporter: Sharp Value Only ---
 function downloadLog() {
-    // Filter array to strictly grab Sharp Value plays
     const sharpPlays = globalPlays.filter(play => play.isTopDownEV);
     
     if (sharpPlays.length === 0) {
-        alert("No sharp value plays available to export! Wait for the market to move or scan closer to game time.");
+        alert("No sharp value plays available to export!");
         return;
     }
 
@@ -276,14 +246,11 @@ function downloadLog() {
     sharpPlays.forEach(play => {
         const fairOddsStr = getAmericanOdds(play.fairProb);
         const retailOddsStr = play.bestRetailOdds > 0 ? `+${play.bestRetailOdds}` : `${play.bestRetailOdds}`;
-        const pName = play.matchupData ? `"${play.matchupData.pitcherName}"` : "N/A";
-        const pHand = play.matchupData ? play.matchupData.pitcherHand : "N/A";
-        const pf = play.matchupData ? play.matchupData.parkFactor.toFixed(2) : "1.00";
 
         const row = [
             `"${play.gameTime} CT"`,
             `"${play.playerName}"`,
-            `"${play.marketName}"`,
+            `"pitcher_outs"`,
             play.side,
             play.targetLine,
             `"${play.benchmarkName}"`,
@@ -291,13 +258,13 @@ function downloadLog() {
             (play.fairProb * 100).toFixed(2),
             `"${play.bestRetailBook}"`,
             retailOddsStr,
-            (play.evResult.hitRate * 100).toFixed(2),
-            (play.evResult.edge * 100).toFixed(2),
+            (play.simHitRate * 100).toFixed(2),
+            (play.ev * 100).toFixed(2),
             play.unitSize.toFixed(2),
             "YES",
-            pName,
-            pHand,
-            pf
+            "N/A",
+            "N/A",
+            "1.00"
         ];
         csvRows.push(row.join(","));
     });
@@ -319,33 +286,9 @@ async function scanSlate() {
     document.getElementById("results-grid").innerHTML = ""; 
     globalPlays = []; 
     
-    updateStatus("Fetching MLB Schedule & Probable Pitchers...");
-    
-    const todayDate = new Date().toLocaleDateString('en-CA', { timeZone: 'America/Chicago' }); 
-    const scheduleUrl = `https://statsapi.mlb.com/api/v1/schedule?sportId=1&date=${todayDate}&hydrate=probablePitcher,team`;
-    let teamStarters = {};
-    
-    try {
-        const schedRes = await fetch(scheduleUrl);
-        const scheduleData = await schedRes.json();
-        if (scheduleData.dates && scheduleData.dates.length > 0) {
-            for (let g of scheduleData.dates[0].games) {
-                if (g.teams.home.probablePitcher) {
-                    const id = g.teams.home.probablePitcher.id;
-                    teamStarters[g.teams.home.team.name] = { id: id, name: g.teams.home.probablePitcher.fullName, hand: await getPitcherHand(id) };
-                }
-                if (g.teams.away.probablePitcher) {
-                    const id = g.teams.away.probablePitcher.id;
-                    teamStarters[g.teams.away.team.name] = { id: id, name: g.teams.away.probablePitcher.fullName, hand: await getPitcherHand(id) };
-                }
-            }
-        }
-    } catch (error) {
-        console.error("Warning: Could not fetch probable pitchers.", error);
-    }
+    updateStatus("Fetching MLB Schedule...");
     
     const targetBookmakers = "pinnacle,willhill_us,draftkings,fanatics,fanduel,novig,espnbet,betmgm";
-    // Strictly evaluating pitcher_outs
     const marketsToScan = "pitcher_outs";
     
     try {
@@ -372,180 +315,166 @@ async function scanSlate() {
             } catch(e) { continue; }
             
             let oddsData = await oddsResponse.json();
-            
-            if (oddsData.message) {
-                throw new Error(oddsData.message);
-            }
-            
+            if (oddsData.message) throw new Error(oddsData.message);
             if (!oddsData.bookmakers || oddsData.bookmakers.length === 0) continue;
             
             const marketDict = {};
             for (const bookmaker of oddsData.bookmakers) {
                 const bookName = bookmaker.title;
-                
                 for (const market of bookmaker.markets) {
-                    const marketName = market.key;
-                    if (!marketDict[marketName]) marketDict[marketName] = {};
+                    if (market.key !== 'pitcher_outs') continue;
+                    if (!marketDict['pitcher_outs']) marketDict['pitcher_outs'] = {};
                     
                     for (const outcome of market.outcomes) {
                         const playerName = outcome.description;
                         if (!playerName) continue;
                         
-                        if (!marketDict[marketName][playerName]) {
-                            marketDict[marketName][playerName] = { pinnacle: {}, fanduel: {}, retail: {} };
+                        if (!marketDict['pitcher_outs'][playerName]) {
+                            marketDict['pitcher_outs'][playerName] = { pinnacle: {}, fanduel: {}, retail: {} };
                         }
                         
                         if (bookmaker.key === 'pinnacle') {
-                            marketDict[marketName][playerName].pinnacle[outcome.name] = outcome;
+                            marketDict['pitcher_outs'][playerName].pinnacle[outcome.name] = outcome;
                         } 
                         if (bookmaker.key === 'fanduel') {
-                            marketDict[marketName][playerName].fanduel[outcome.name] = outcome;
+                            marketDict['pitcher_outs'][playerName].fanduel[outcome.name] = outcome;
                         }
                         
-                        if (!marketDict[marketName][playerName].retail[bookName]) {
-                            marketDict[marketName][playerName].retail[bookName] = {};
+                        if (!marketDict['pitcher_outs'][playerName].retail[bookName]) {
+                            marketDict['pitcher_outs'][playerName].retail[bookName] = {};
                         }
-                        marketDict[marketName][playerName].retail[bookName][outcome.name] = outcome;
+                        marketDict['pitcher_outs'][playerName].retail[bookName][outcome.name] = outcome;
                     }
                 }
             }
             
-            for (const [marketName, players] of Object.entries(marketDict)) {
-                for (const [playerName, lines] of Object.entries(players)) {
-                    
-                    const fd = lines.fanduel;
-                    const pinny = lines.pinnacle;
-                    
-                    let targetLine = null;
-                    let fairProbOver = null;
-                    let fairProbUnder = null;
-                    let benchmarkName = "";
-                    
-                    if (fd && fd['Over'] && fd['Under']) {
-                        targetLine = fd['Over'].point;
-                        const probs = getFairProbabilities(fd['Over'].price, fd['Under'].price);
-                        fairProbOver = probs.over;
-                        fairProbUnder = probs.under;
-                        benchmarkName = "FanDuel";
-                    } 
-                    else if (pinny && pinny['Over'] && pinny['Under']) {
-                        targetLine = pinny['Over'].point;
-                        const probs = getFairProbabilities(pinny['Over'].price, pinny['Under'].price);
-                        fairProbOver = probs.over;
-                        fairProbUnder = probs.under;
-                        benchmarkName = "Pinnacle";
-                    }
-                    
-                    if (targetLine === null) continue;
-                    
-                    let bestRetailOddsOver = -Infinity;
-                    let bestRetailBookOver = "";
-                    let bestRetailOddsUnder = -Infinity;
-                    let bestRetailBookUnder = "";
-                    
-                    for (const [retailBookName, retailLines] of Object.entries(lines.retail)) {
-                        if (retailLines['Over'] && retailLines['Over'].point === targetLine) {
-                            if (retailLines['Over'].price > bestRetailOddsOver) {
-                                bestRetailOddsOver = retailLines['Over'].price;
-                                bestRetailBookOver = retailBookName;
-                            }
-                        }
-                        if (retailLines['Under'] && retailLines['Under'].point === targetLine) {
-                            if (retailLines['Under'].price > bestRetailOddsUnder) {
-                                bestRetailOddsUnder = retailLines['Under'].price;
-                                bestRetailBookUnder = retailBookName;
-                            }
+            for (const [playerName, lines] of Object.entries(marketDict['pitcher_outs'] || {})) {
+                const fd = lines.fanduel;
+                const pinny = lines.pinnacle;
+                
+                let targetLine = null;
+                let fairProbOver = null;
+                let fairProbUnder = null;
+                let benchmarkName = "";
+                
+                if (fd && fd['Over'] && fd['Under']) {
+                    targetLine = fd['Over'].point;
+                    const probs = getFairProbabilities(fd['Over'].price, fd['Under'].price);
+                    fairProbOver = probs.over;
+                    fairProbUnder = probs.under;
+                    benchmarkName = "FanDuel";
+                } else if (pinny && pinny['Over'] && pinny['Under']) {
+                    targetLine = pinny['Over'].point;
+                    const probs = getFairProbabilities(pinny['Over'].price, pinny['Under'].price);
+                    fairProbOver = probs.over;
+                    fairProbUnder = probs.under;
+                    benchmarkName = "Pinnacle";
+                }
+                
+                if (targetLine === null) continue;
+                
+                let bestRetailOddsOver = -Infinity;
+                let bestRetailBookOver = "";
+                let bestRetailOddsUnder = -Infinity;
+                let bestRetailBookUnder = "";
+                
+                for (const [retailBookName, retailLines] of Object.entries(lines.retail)) {
+                    if (retailLines['Over'] && retailLines['Over'].point === targetLine) {
+                        if (retailLines['Over'].price > bestRetailOddsOver) {
+                            bestRetailOddsOver = retailLines['Over'].price;
+                            bestRetailBookOver = retailBookName;
                         }
                     }
-                    
-                    const playerId = await fetchMlbPlayerId(playerName);
-                    if (!playerId) continue;
-                    
-                    let expectedValue = 0;
-                    
-                    const stats = await fetchPlayerStats(playerId, true);
-                    if (!stats) continue;
-
-                    if (marketName === "pitcher_outs" && stats.gamesStarted > 0) {
+                    if (retailLines['Under'] && retailLines['Under'].point === targetLine) {
+                        if (retailLines['Under'].price > bestRetailOddsUnder) {
+                            bestRetailOddsUnder = retailLines['Under'].price;
+                            bestRetailBookUnder = retailBookName;
+                        }
+                    }
+                }
+                
+                // Fetch stats for reference simulation
+                const playerId = await fetchMlbPlayerId(playerName);
+                let expectedValue = 0;
+                if (playerId) {
+                    const stats = await fetchPlayerStats(playerId);
+                    if (stats && stats.gamesStarted > 0) {
                         let ipParts = stats.inningsPitched.split('.');
                         let totalOuts = (parseInt(ipParts[0]) * 3) + (ipParts.length > 1 ? parseInt(ipParts[1]) : 0);
                         expectedValue = totalOuts / stats.gamesStarted;
                     }
+                }
+
+                // --- EVALUATE OVER ---
+                if (bestRetailOddsOver > -Infinity) {
+                    const bOver = bestRetailOddsOver > 0 ? (bestRetailOddsOver / 100) : (100 / Math.abs(bestRetailOddsOver));
+                    // Expected Value calculation: (fairProb * decimalPayout) - 1
+                    const evOver = (fairProbOver * (bOver + 1)) - 1;
                     
-                    if (expectedValue > 0) {
-                        // Evaluate OVER
-                        if (bestRetailOddsOver > -Infinity) {
-                            const retailProbOver = bestRetailOddsOver > 0 ? 100 / (bestRetailOddsOver + 100) : Math.abs(bestRetailOddsOver) / (Math.abs(bestRetailOddsOver) + 100);
-                            const isTopDownEVOver = retailProbOver < fairProbOver;
-                            const evResultOver = runSimulation(expectedValue, targetLine, retailProbOver, false, 'Over');
-                            
-                            if (evResultOver.isPositiveEV && evResultOver.edge >= MIN_EDGE) {
-                                const b = bestRetailOddsOver > 0 ? (bestRetailOddsOver / 100) : (100 / Math.abs(bestRetailOddsOver));
-                                const p = evResultOver.hitRate;
-                                const q = 1 - p;
-                                const fullKelly = ((b * p) - q) / b;
-                                const quarterKellyPct = fullKelly > 0 ? (fullKelly * 0.25) : 0;
-                                let uSize = quarterKellyPct * 100;
-                                if (uSize > 2.00) uSize = 2.00;
+                    if (evOver >= MIN_EV) {
+                        // 1/4 Kelly strictly anchored to Sharp Benchmark Fair Probability
+                        const qOver = 1 - fairProbOver;
+                        const fullKellyOver = ((bOver * fairProbOver) - qOver) / bOver;
+                        let uSizeOver = fullKellyOver > 0 ? (fullKellyOver * 0.25 * 100) : 0;
+                        if (uSizeOver > 2.00) uSizeOver = 2.00;
 
-                                globalPlays.push({
-                                    playerName: playerName,
-                                    marketName: marketName,
-                                    targetLine: targetLine,
-                                    side: 'Over',
-                                    evResult: evResultOver,
-                                    bestRetailOdds: bestRetailOddsOver,
-                                    bestRetailBook: bestRetailBookOver,
-                                    fairProb: fairProbOver,
-                                    benchmarkName: benchmarkName,
-                                    gameTime: timeString,
-                                    matchupData: null,
-                                    isTopDownEV: isTopDownEVOver,
-                                    unitSize: uSize
-                                });
-                            }
-                        }
+                        const simHitOver = expectedValue > 0 ? runSimulation(expectedValue, targetLine, 'Over') : fairProbOver;
 
-                        // Evaluate UNDER
-                        if (bestRetailOddsUnder > -Infinity) {
-                            const retailProbUnder = bestRetailOddsUnder > 0 ? 100 / (bestRetailOddsUnder + 100) : Math.abs(bestRetailOddsUnder) / (Math.abs(bestRetailOddsUnder) + 100);
-                            const isTopDownEVUnder = retailProbUnder < fairProbUnder;
-                            const evResultUnder = runSimulation(expectedValue, targetLine, retailProbUnder, false, 'Under');
-                            
-                            if (evResultUnder.isPositiveEV && evResultUnder.edge >= MIN_EDGE) {
-                                const b = bestRetailOddsUnder > 0 ? (bestRetailOddsUnder / 100) : (100 / Math.abs(bestRetailOddsUnder));
-                                const p = evResultUnder.hitRate;
-                                const q = 1 - p;
-                                const fullKelly = ((b * p) - q) / b;
-                                const quarterKellyPct = fullKelly > 0 ? (fullKelly * 0.25) : 0;
-                                let uSize = quarterKellyPct * 100;
-                                if (uSize > 2.00) uSize = 2.00;
+                        globalPlays.push({
+                            playerName: playerName,
+                            marketName: "pitcher_outs",
+                            targetLine: targetLine,
+                            side: 'Over',
+                            ev: evOver,
+                            simHitRate: simHitOver,
+                            bestRetailOdds: bestRetailOddsOver,
+                            bestRetailBook: bestRetailBookOver,
+                            fairProb: fairProbOver,
+                            benchmarkName: benchmarkName,
+                            gameTime: timeString,
+                            isTopDownEV: true,
+                            unitSize: uSizeOver
+                        });
+                    }
+                }
 
-                                globalPlays.push({
-                                    playerName: playerName,
-                                    marketName: marketName,
-                                    targetLine: targetLine,
-                                    side: 'Under',
-                                    evResult: evResultUnder,
-                                    bestRetailOdds: bestRetailOddsUnder,
-                                    bestRetailBook: bestRetailBookUnder,
-                                    fairProb: fairProbUnder,
-                                    benchmarkName: benchmarkName,
-                                    gameTime: timeString,
-                                    matchupData: null,
-                                    isTopDownEV: isTopDownEVUnder,
-                                    unitSize: uSize
-                                });
-                            }
-                        }
+                // --- EVALUATE UNDER ---
+                if (bestRetailOddsUnder > -Infinity) {
+                    const bUnder = bestRetailOddsUnder > 0 ? (bestRetailOddsUnder / 100) : (100 / Math.abs(bestRetailOddsUnder));
+                    const evUnder = (fairProbUnder * (bUnder + 1)) - 1;
+                    
+                    if (evUnder >= MIN_EV) {
+                        // 1/4 Kelly strictly anchored to Sharp Benchmark Fair Probability
+                        const qUnder = 1 - fairProbUnder;
+                        const fullKellyUnder = ((bUnder * fairProbUnder) - qUnder) / bUnder;
+                        let uSizeUnder = fullKellyUnder > 0 ? (fullKellyUnder * 0.25 * 100) : 0;
+                        if (uSizeUnder > 2.00) uSizeUnder = 2.00;
+
+                        const simHitUnder = expectedValue > 0 ? runSimulation(expectedValue, targetLine, 'Under') : fairProbUnder;
+
+                        globalPlays.push({
+                            playerName: playerName,
+                            marketName: "pitcher_outs",
+                            targetLine: targetLine,
+                            side: 'Under',
+                            ev: evUnder,
+                            simHitRate: simHitUnder,
+                            bestRetailOdds: bestRetailOddsUnder,
+                            bestRetailBook: bestRetailBookUnder,
+                            fairProb: fairProbUnder,
+                            benchmarkName: benchmarkName,
+                            gameTime: timeString,
+                            isTopDownEV: true,
+                            unitSize: uSizeUnder
+                        });
                     }
                 }
             }
         }
 
-        globalPlays.sort((a, b) => b.evResult.edge - a.evResult.edge);
+        globalPlays.sort((a, b) => b.ev - a.ev);
         renderCards();
-        updateStatus(`Scan complete. Displaying ${globalPlays.length} premium +EV plays.`);
+        updateStatus(`Scan complete. Found ${globalPlays.length} true sharp +EV plays.`);
     } catch (error) {
         updateStatus(`Error: ${error.message}`);
         document.getElementById("results-grid").innerHTML = `
