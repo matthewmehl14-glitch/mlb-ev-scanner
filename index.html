@@ -25,8 +25,9 @@
                     <button onclick="scanSlate()" class="bg-green-600 hover:bg-green-500 text-white font-bold py-3 px-6 rounded shadow-lg transition-transform transform hover:scale-105">
                         Scan Today's Slate
                     </button>
-                    <button onclick="downloadLog()" class="bg-purple-600 hover:bg-purple-500 text-white font-bold py-3 px-6 rounded shadow-lg transition-transform transform hover:scale-105">
-                        Export Sharp CSV
+                    <!-- NEW SYNC BUTTON -->
+                    <button onclick="syncToSheets()" class="bg-purple-600 hover:bg-purple-500 text-white font-bold py-3 px-6 rounded shadow-lg transition-transform transform hover:scale-105">
+                        Sync Plays to Sheets
                     </button>
                     <button onclick="clearApiKey()" class="text-sm text-gray-400 underline hover:text-white ml-2">Change API Key</button>
                 </div>
@@ -47,7 +48,7 @@
         </div>
     </div>
 
-    <!-- Cache Buster v=6 -->
-    <script src="app.js?v=7"></script>
+    <!-- Cache Buster v=8 -->
+    <script src="app.js?v=8"></script>
 </body>
 </html>
