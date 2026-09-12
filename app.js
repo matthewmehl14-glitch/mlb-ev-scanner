@@ -133,55 +133,57 @@ function appendResultCard(play) {
     grid.appendChild(card);
 }
 
-// --- CSV Exporter: Sharp Value Only ---
-function downloadLog() {
+// --- Automated Google Sheets Sync ---
+function syncToSheets() {
+    // Filter for only the Sharp Value plays
     const sharpPlays = globalPlays.filter(play => play.isTopDownEV);
     
     if (sharpPlays.length === 0) {
-        alert("No sharp value plays available to export!");
+        alert("No sharp value plays available to sync!");
         return;
     }
 
-    const headers = [
-        "Time", "Player", "Market", "Side", "Line", 
-        "Benchmark", "Fair Odds", "Fair Prob %", 
-        "Best Book", "Best Odds", "EV %", 
-        "Unit Rec", "Sharp Value"
-    ];
+    updateStatus("Syncing to Google Sheets...");
 
-    let csvRows = [headers.join(",")];
-
-    sharpPlays.forEach(play => {
+    // Format the data to perfectly match your spreadsheet columns
+    const payload = sharpPlays.map(play => {
         const fairOddsStr = getAmericanOdds(play.fairProb);
         const retailOddsStr = play.bestRetailOdds > 0 ? `+${play.bestRetailOdds}` : `${play.bestRetailOdds}`;
 
-        const row = [
-            `"${play.gameTime} CT"`,
-            `"${play.playerName}"`,
-            `"pitcher_outs"`,
-            play.side,
-            play.targetLine,
-            `"${play.benchmarkName}"`,
-            fairOddsStr,
-            (play.fairProb * 100).toFixed(2),
-            `"${play.bestRetailBook}"`,
-            retailOddsStr,
-            (play.ev * 100).toFixed(2),
-            play.unitSize.toFixed(2),
-            "YES"
-        ];
-        csvRows.push(row.join(","));
+        return {
+            time: `${play.gameTime} CT`,
+            player: play.playerName,
+            market: "pitcher_outs",
+            side: play.side,
+            line: play.targetLine,
+            benchmark: play.benchmarkName,
+            fairOdds: fairOddsStr,
+            fairProb: (play.fairProb * 100).toFixed(2),
+            bestBook: play.bestRetailBook,
+            bestOdds: retailOddsStr,
+            ev: (play.ev * 100).toFixed(2),
+            unitRec: play.unitSize.toFixed(2),
+            sharpValue: "YES"
+        };
     });
 
-    const csvData = new Blob([csvRows.join("\n")], { type: "text/csv;charset=utf-8;" });
-    const csvUrl = URL.createObjectURL(csvData);
-    const link = document.createElement("a");
-    link.href = csvUrl;
-    link.download = `MLB_Sharp_Edges_${new Date().toISOString().split('T')[0]}.csv`;
-    document.body.appendChild(link);
-    link.click();
-    document.body.removeChild(link);
-    URL.revokeObjectURL(csvUrl);
+    // The user's provided Webhook URL
+    const WEBHOOK_URL = "https://script.google.com/macros/s/AKfycbwlIS-p22XnZr-KFX57fp_sxwOhdq-8BY-pzzAdEqSwi04dUf8nlfaNhIOFoIgwvXCQ3w/exec";
+
+    // Fire the data into the cloud spreadsheet
+    fetch(WEBHOOK_URL, {
+        method: 'POST',
+        mode: 'no-cors', // Bypasses cross-origin restrictions
+        headers: {
+            'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(payload)
+    }).then(() => {
+        updateStatus(`Successfully synced ${sharpPlays.length} plays to your ledger!`);
+    }).catch(error => {
+        console.error(error);
+        updateStatus("Error syncing to Sheets. Check console.");
+    });
 }
 
 // --- Main Orchestrator ---
